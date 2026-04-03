@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WHISPER_DIR="${WHISPER_DIR:-$HOME/.claude-whisper}"
+ARCHIVE="$WHISPER_DIR/archive"
+DAYS="${1:-7}"
+
+[ ! -d "$ARCHIVE" ] && { echo "No archive directory." >&2; exit 0; }
+
+# Find and remove files older than N days
+COUNT=$(find "$ARCHIVE" -name 'msg-*.json' -mtime +"$DAYS" 2>/dev/null | wc -l | tr -d ' ')
+
+if [ "$COUNT" -eq 0 ]; then
+  echo "🗑️  whisper-clean: nothing to remove (no messages older than ${DAYS} days)"
+  exit 0
+fi
+
+find "$ARCHIVE" -name 'msg-*.json' -mtime +"$DAYS" -delete 2>/dev/null
+
+echo "🗑️  whisper-clean: removed ${COUNT} archived message(s) older than ${DAYS} days"

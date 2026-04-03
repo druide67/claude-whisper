@@ -25,9 +25,12 @@ for msg_file in "$INBOX"/msg-*.json; do
   FROM=$(jq -r '.from // "unknown"' "$msg_file" 2>/dev/null || echo "unknown")
   CONTENT=$(jq -r '.content // ""' "$msg_file" 2>/dev/null || echo "")
   TS=$(jq -r '.timestamp // ""' "$msg_file" 2>/dev/null || echo "")
+  THREAD=$(jq -r '.thread // ""' "$msg_file" 2>/dev/null || echo "")
   SHORT_TS=$(echo "$TS" | sed 's/.*T\([0-9]*:[0-9]*\).*/\1/')
+  THREAD_TAG=""
+  [ -n "$THREAD" ] && THREAD_TAG=" [${THREAD}]"
   CONTEXT="${CONTEXT}
-> **${FROM}** (${SHORT_TS}): ${CONTENT}"
+> **${FROM}** (${SHORT_TS})${THREAD_TAG}: ${CONTENT}"
   COUNT=$((COUNT + 1))
   mv "$msg_file" "$WHISPER_DIR/archive/" 2>/dev/null || true
 

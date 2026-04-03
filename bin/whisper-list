@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WHISPER_DIR="${WHISPER_DIR:-$HOME/.claude-whisper}"
+PEERS_FILE="$WHISPER_DIR/peers.json"
+
+[ ! -f "$PEERS_FILE" ] && { echo "No peers registered." >&2; exit 1; }
+
+# Read own peer-id
+SELF=""
+if [ -f ".whisper-peer" ]; then
+  SELF=$(cat ".whisper-peer")
+fi
+
+echo "📋 whisper peers:"
+echo ""
+
+jq -r '.peers | to_entries[] | "\(.key)\t\(.value.cwd // "-")\t\(.value.last_seen // "-")"' "$PEERS_FILE" | \
+while IFS=$'\t' read -r id cwd last_seen; do
+  # Count pending messages
+  INBOX="$WHISPER_DIR/inbox/$id"
+  PENDING=0
+  if [ -d "$INBOX" ]; then
+    PENDING=$(find "$INBOX" -name 'msg-*.json' 2>/dev/null | wc -l | tr -d ' ')
+  fi
+
+  # Mark self
+  MARKER=""
+  if [ "$id" = "$SELF" ]; then
+    MARKER=" (you)"
+  fi
+
+  # Format
+  SHORT_TS=$(echo "$last_seen" | sed 's/.*T\([0-9]*:[0-9]*\).*/\1/' 2>/dev/null)
+  echo "  ${id}${MARKER} — ${cwd} — last: ${SHORT_TS} — inbox: ${PENDING}"
+done

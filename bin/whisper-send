@@ -3,7 +3,16 @@ set -euo pipefail
 
 WHISPER_DIR="${WHISPER_DIR:-$HOME/.claude-whisper}"
 
-usage() { echo "Usage: whisper-send <peer-id> <message>" >&2; exit 1; }
+usage() { echo "Usage: whisper-send [-t thread] <peer-id> <message>" >&2; exit 1; }
+
+# Parse optional --thread / -t flag
+THREAD=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -t|--thread) THREAD="$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
 
 [ $# -lt 2 ] && usage
 TO="$1"; shift
@@ -46,10 +55,13 @@ jq -n \
   --arg to "$TO" \
   --arg ts "$NOW" \
   --arg content "$CONTENT" \
-  '{id: $id, from: $from, to: $to, timestamp: $ts, content: $content, priority: "normal", ttl: 3600}' \
+  --arg thread "$THREAD" \
+  '{id: $id, from: $from, to: $to, timestamp: $ts, content: $content, priority: "normal", ttl: 3600} | if $thread != "" then .thread = $thread else . end' \
   > "${MSG_FILE}.tmp"
 
 chmod 600 "${MSG_FILE}.tmp"
 mv "${MSG_FILE}.tmp" "$MSG_FILE"
 
-echo "📤 whisper → $TO: message envoyé ($MSG_ID)"
+THREAD_INFO=""
+[ -n "$THREAD" ] && THREAD_INFO=" [${THREAD}]"
+echo "📤 whisper → ${TO}${THREAD_INFO}: message envoyé ($MSG_ID)"
