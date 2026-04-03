@@ -49,14 +49,14 @@ if [ "$WHISPER_DIR" != "$HOME/.claude-whisper" ]; then
   HOOK_STATUS="skipped (custom WHISPER_DIR)"
 elif [ -f "$SETTINGS" ]; then
   # Check if hook already configured
-  if jq -e --arg cmd "$HOOK_CMD" '.hooks.UserPromptSubmit[]? | select(.command == $cmd)' "$SETTINGS" > /dev/null 2>&1; then
+  if jq -e --arg cmd "$HOOK_CMD" '.hooks.UserPromptSubmit[]?.hooks[]? | select(.command == $cmd)' "$SETTINGS" > /dev/null 2>&1; then
     HOOK_STATUS="already configured"
   else
-    # Add hook, preserving existing hooks
+    # Add hook with matcher + hooks array format
     jq --arg cmd "$HOOK_CMD" '
       .hooks //= {} |
       .hooks.UserPromptSubmit //= [] |
-      .hooks.UserPromptSubmit += [{"type": "command", "command": $cmd}]
+      .hooks.UserPromptSubmit += [{"matcher": "", "hooks": [{"type": "command", "command": $cmd}]}]
     ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
     HOOK_STATUS="installed"
   fi

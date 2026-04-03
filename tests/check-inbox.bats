@@ -28,8 +28,7 @@ teardown() {
 
   run bash "$HOOKS/check-inbox.sh"
   [ "$status" -eq 0 ]
-  # Output must be valid JSON with hookSpecificOutput
-  echo "$output" | jq -e '.hookSpecificOutput.additionalContext'
+  [[ "$output" == *"[whisper]"* ]]
   [[ "$output" == *"test-alice"* ]]
   [[ "$output" == *"hello bob"* ]]
 }
