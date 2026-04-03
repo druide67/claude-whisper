@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WHISPER_DIR="${WHISPER_DIR:-$HOME/.claude-whisper}"
+
+usage() { echo "Usage: whisper-send <peer-id> <message>" >&2; exit 1; }
+
+[ $# -lt 2 ] && usage
+TO="$1"; shift
+CONTENT="$*"
+
+# Validate peer-id
+if [[ ! "$TO" =~ ^[a-zA-Z0-9-]+$ ]]; then
+  echo "Error: peer-id must be alphanumeric + dash (got: $TO)" >&2
+  exit 1
+fi
+
+# Read sender identity
+FROM=$(cat "$WHISPER_DIR/.current-peer" 2>/dev/null) || {
+  echo "Error: not initialized. Run whisper-init first." >&2; exit 1
+}
+
+# Ensure recipient inbox exists
+mkdir -p "$WHISPER_DIR/inbox/$TO"
+
+# Build message
+NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+TS=$(date +%s)
+RAND=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+MSG_ID="msg-${TS}-${RAND}"
+MSG_FILE="$WHISPER_DIR/inbox/$TO/${MSG_ID}.json"
+
+jq -n \
+  --arg id "$MSG_ID" \
+  --arg from "$FROM" \
+  --arg to "$TO" \
+  --arg ts "$NOW" \
+  --arg content "$CONTENT" \
+  '{id: $id, from: $from, to: $to, timestamp: $ts, content: $content, priority: "normal", ttl: 3600}' \
+  > "${MSG_FILE}.tmp"
+
+chmod 600 "${MSG_FILE}.tmp"
+mv "${MSG_FILE}.tmp" "$MSG_FILE"
+
+echo "✓ Message sent to $TO ($MSG_ID)"

@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WHISPER_DIR="${WHISPER_DIR:-$HOME/.claude-whisper}"
+
+usage() { echo "Usage: whisper-init <peer-id>" >&2; exit 1; }
+
+[ $# -lt 1 ] && usage
+PEER_ID="$1"
+
+# Validate peer-id: alphanumeric + dash only
+if [[ ! "$PEER_ID" =~ ^[a-zA-Z0-9-]+$ ]]; then
+  echo "Error: peer-id must be alphanumeric + dash (got: $PEER_ID)" >&2
+  exit 1
+fi
+
+# Locate repo hooks (relative to this script)
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Create directory structure
+mkdir -p "$WHISPER_DIR/inbox/$PEER_ID" "$WHISPER_DIR/archive" "$WHISPER_DIR/hooks"
+chmod 700 "$WHISPER_DIR" "$WHISPER_DIR/inbox" "$WHISPER_DIR/archive" "$WHISPER_DIR/hooks"
+
+# Copy hooks from repo
+cp "$REPO_DIR/hooks/check-inbox.sh" "$WHISPER_DIR/hooks/"
+chmod 700 "$WHISPER_DIR/hooks/check-inbox.sh"
+
+# Register current peer
+echo "$PEER_ID" > "$WHISPER_DIR/.current-peer"
+
+# Update peers.json
+PEERS_FILE="$WHISPER_DIR/peers.json"
+NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+if [ -f "$PEERS_FILE" ]; then
+  jq --arg id "$PEER_ID" --arg ts "$NOW" \
+    '.peers[$id].registered //= $ts | .peers[$id].last_seen = $ts' \
+    "$PEERS_FILE" > "$PEERS_FILE.tmp" && mv "$PEERS_FILE.tmp" "$PEERS_FILE"
+else
+  jq -n --arg id "$PEER_ID" --arg ts "$NOW" \
+    '{peers: {($id): {registered: $ts, last_seen: $ts}}}' > "$PEERS_FILE"
+fi
+chmod 600 "$PEERS_FILE"
+
+# Inject hook into ~/.claude/settings.json (skip if WHISPER_DIR is overridden)
+SETTINGS="$HOME/.claude/settings.json"
+HOOK_CMD="bash $WHISPER_DIR/hooks/check-inbox.sh"
+
+if [ "$WHISPER_DIR" != "$HOME/.claude-whisper" ]; then
+  HOOK_STATUS="skipped (custom WHISPER_DIR)"
+elif [ -f "$SETTINGS" ]; then
+  # Check if hook already configured
+  if jq -e --arg cmd "$HOOK_CMD" '.hooks.UserPromptSubmit[]? | select(.command == $cmd)' "$SETTINGS" > /dev/null 2>&1; then
+    HOOK_STATUS="already configured"
+  else
+    # Add hook, preserving existing hooks
+    jq --arg cmd "$HOOK_CMD" '
+      .hooks //= {} |
+      .hooks.UserPromptSubmit //= [] |
+      .hooks.UserPromptSubmit += [{"type": "command", "command": $cmd}]
+    ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
+    HOOK_STATUS="installed"
+  fi
+else
+  echo "Warning: $SETTINGS not found. Create it or add the hook manually." >&2
+  HOOK_STATUS="skipped"
+fi
+
+echo "✓ Whisper initialized for peer: $PEER_ID"
+echo "✓ Directory: $WHISPER_DIR"
+echo "✓ Hook: $HOOK_STATUS"
