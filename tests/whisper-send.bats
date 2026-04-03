@@ -2,19 +2,19 @@
 
 setup() {
   export WHISPER_DIR="$(mktemp -d)"
+  export PROJECT_DIR="$(mktemp -d)"
   BIN="$BATS_TEST_DIRNAME/../bin"
-  # Initialize a sender
-  bash "$BIN/whisper-init" test-alice
+  bash "$BIN/whisper-init" test-alice "$PROJECT_DIR"
+  cd "$PROJECT_DIR"
 }
 
 teardown() {
-  rm -rf "$WHISPER_DIR"
+  rm -rf "$WHISPER_DIR" "$PROJECT_DIR"
 }
 
 @test "sends a message to recipient inbox" {
   run bash "$BIN/whisper-send" test-bob "hello from alice"
   [ "$status" -eq 0 ]
-  # Check message file exists
   shopt -s nullglob
   files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
   [ ${#files[@]} -eq 1 ]
@@ -59,4 +59,10 @@ teardown() {
   shopt -s nullglob
   tmp_files=("$WHISPER_DIR/inbox/test-bob"/*.tmp)
   [ ${#tmp_files[@]} -eq 0 ]
+}
+
+@test "output has visual format" {
+  run bash "$BIN/whisper-send" test-bob "hello"
+  [[ "$output" == *"📤"* ]]
+  [[ "$output" == *"test-bob"* ]]
 }

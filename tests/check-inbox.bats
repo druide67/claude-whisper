@@ -2,14 +2,15 @@
 
 setup() {
   export WHISPER_DIR="$(mktemp -d)"
+  export PROJECT_DIR="$(mktemp -d)"
   BIN="$BATS_TEST_DIRNAME/../bin"
   HOOKS="$BATS_TEST_DIRNAME/../hooks"
-  # Initialize sender and receiver
-  bash "$BIN/whisper-init" test-bob
+  bash "$BIN/whisper-init" test-bob "$PROJECT_DIR"
+  cd "$PROJECT_DIR"
 }
 
 teardown() {
-  rm -rf "$WHISPER_DIR"
+  rm -rf "$WHISPER_DIR" "$PROJECT_DIR"
 }
 
 @test "exits silently when inbox is empty" {
@@ -18,8 +19,7 @@ teardown() {
   [ -z "$output" ]
 }
 
-@test "returns JSON with pending messages" {
-  # Send a message to test-bob (from a fake sender)
+@test "returns messages with visual format" {
   mkdir -p "$WHISPER_DIR/inbox/test-bob"
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   jq -n --arg ts "$NOW" \
@@ -28,7 +28,7 @@ teardown() {
 
   run bash "$HOOKS/check-inbox.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[whisper]"* ]]
+  [[ "$output" == *"whisper"* ]]
   [[ "$output" == *"test-alice"* ]]
   [[ "$output" == *"hello bob"* ]]
 }
@@ -41,13 +41,12 @@ teardown() {
     > "$WHISPER_DIR/inbox/test-bob/msg-test-2.json"
 
   bash "$HOOKS/check-inbox.sh" > /dev/null
-  # Original gone, archived
   [ ! -f "$WHISPER_DIR/inbox/test-bob/msg-test-2.json" ]
   [ -f "$WHISPER_DIR/archive/msg-test-2.json" ]
 }
 
 @test "exits silently when no peer configured" {
-  rm -f "$WHISPER_DIR/.current-peer"
+  rm -f "$PROJECT_DIR/.whisper-peer" "$WHISPER_DIR/.current-peer"
   run bash "$HOOKS/check-inbox.sh"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
