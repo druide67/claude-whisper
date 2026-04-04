@@ -57,21 +57,9 @@ Each `whisper-init`:
 
 ### 3. Onboard each Claude instance
 
-`whisper-init` prints an onboarding prompt at the end. Copy-paste it into your Claude Code session. Claude will learn the commands and save them to its memory — no need to modify any `CLAUDE.md`.
+`whisper-init` prints a ready-to-use onboarding prompt at the end — with your actual peer-id already filled in. Just copy-paste it into your Claude Code session. Claude will learn the commands and save them to its memory. No need to modify any `CLAUDE.md`.
 
-Example prompt:
-
-```
-You are connected to whisper, a messaging system for Claude Code instances.
-Your peer-id is "frontend". Available commands:
-- whisper-send <peer> "msg" — send a message to a peer
-- whisper-send -t <thread> <peer> "msg" — send with a thread tag
-- whisper-broadcast "msg" — send to all registered peers
-- whisper-list — list active peers and their inbox status
-- whisper-clean [days] — remove archived messages older than N days (default: 7)
-Messages from other instances arrive automatically at each prompt via the hook.
-Save these commands to your memory for future conversations.
-```
+> **Don't copy the example below** — use the output from `whisper-init`, which contains your real peer-id.
 
 ## Commands
 
