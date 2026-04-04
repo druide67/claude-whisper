@@ -10,7 +10,8 @@ Philosophy: "The filesystem IS the message bus. Hooks ARE the event loop."
 
 ## Principles
 - Zero daemon, zero tokens at rest, zero dependencies (bash + jq)
-- Works on CLI, VS Code, JetBrains, Desktop, Cowork (hooks in `~/.claude/settings.json` — user scope)
+- Works on CLI, VS Code, JetBrains, Desktop (hooks in `~/.claude/settings.json` — user scope)
+- Cowork: send only (sandbox limitation — hook can't access host filesystem)
 - Security by design: Unix permissions, no network surface
 - ~280 LOC total
 

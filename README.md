@@ -1,6 +1,6 @@
 # claude-whisper
 
-> Inter-instance communication that costs zero tokens and zero daemons. Works everywhere — CLI, VS Code, JetBrains, Cowork.
+> Inter-instance communication that costs zero tokens and zero daemons. Works everywhere — CLI, VS Code, JetBrains, Desktop.
 
 Lightweight Inter-Process Communication (IPC) for [Claude Code](https://claude.ai/code) instances. The filesystem is the message bus. Hooks are the event loop.
 
@@ -117,14 +117,14 @@ Thread tags appear in brackets:
 | **Tokens at rest** | 0 | ~500-800/poll | ~50-200/poll |
 | **Network surface** | None | localhost:7899 | localhost:9876 |
 | **Setup time** | < 1 min | 5-10 min | 10-15 min |
-| **IDE support** | CLI, VS Code, JetBrains, Desktop, Cowork | CLI only | CLI only |
+| **IDE support** | CLI, VS Code, JetBrains, Desktop | CLI only | CLI only |
 
 ## Requirements
 
 - **macOS** or **Linux** (WSL on Windows)
 - **bash** (v3+)
 - **jq** (`brew install jq` / `apt install jq`)
-- **Claude Code** v2+ (CLI, VS Code, JetBrains, Desktop, Cowork)
+- **Claude Code** v2+ (CLI, VS Code, JetBrains, Desktop)
 
 ## Security
 
@@ -133,6 +133,12 @@ Thread tags appear in brackets:
 - **Atomic writes** — messages written to `.tmp` then moved (no partial reads)
 - **Input validation** — peer-ids restricted to `[a-zA-Z0-9-]`, path traversal blocked
 - **No secrets** — messages are plain text files, don't send credentials
+
+## Limitations
+
+- **Cowork (sandbox)**: Cowork sessions run in a Linux sandbox. They can **send** messages (via Desktop Commander executing on the host), but cannot **receive** automatically (the hook runs inside the sandbox where `~/.claude-whisper/` doesn't exist). Use `whisper-send --from <peer-id>` from Cowork.
+- **Single machine**: whisper uses the local filesystem — no cross-machine messaging.
+- **Not real-time**: messages are delivered at the recipient's next prompt, not instantly.
 
 ## License
 
