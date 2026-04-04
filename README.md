@@ -12,7 +12,7 @@ Running multiple Claude Code instances on the same machine? They can't talk to e
 
 **claude-whisper** uses the filesystem as a message bus and Claude Code's native hooks as the event loop. Messages are JSON files. Delivery is atomic. Reception costs zero tokens when the inbox is empty.
 
-**Works everywhere Claude Code runs** — CLI, VS Code, JetBrains, Desktop app. No plugin compatibility issues, no CLI-only limitations. Hooks are defined at user level, active across all surfaces.
+**Works everywhere Claude Code runs** — CLI, VS Code, JetBrains, Desktop app, Cowork. No plugin compatibility issues, no CLI-only limitations. Hooks are defined at user level, active across all surfaces.
 
 ```
 Instance A                    Filesystem                    Instance B
@@ -25,41 +25,73 @@ Instance A                    Filesystem                    Instance B
     |                                        Claude sees msg --> |
 ```
 
-## Quick start
+## Getting started
+
+### 1. Clone (once per machine)
 
 ```bash
-git clone https://github.com/druide67/claude-whisper.git
-cd claude-whisper
-bash bin/whisper-init my-project
+git clone https://github.com/druide67/claude-whisper.git ~/claude-whisper
 ```
 
-That's it. The hook is installed, your peer is registered.
+### 2. Register each project
 
-**Or just tell Claude:**
-
-> Install claude-whisper for this project. Clone https://github.com/druide67/claude-whisper
-> into ~/claude-whisper if not already there, then run `bash ~/claude-whisper/bin/whisper-init <my-peer-id>`
-> from my project directory.
-
-## Usage
+From each project's root directory:
 
 ```bash
-# Send a message to another instance
-bash ~/claude-whisper/bin/whisper-send <peer-id> "Check your imports, I changed the auth API"
-
-# Broadcast to all registered peers
-bash ~/claude-whisper/bin/whisper-broadcast "Deploying v2.0 in 5 minutes"
-
-# Messages arrive automatically at the recipient's next prompt
-# No action needed on the receiving side
+cd ~/projects/frontend && bash ~/claude-whisper/bin/whisper-init frontend
+cd ~/projects/backend  && bash ~/claude-whisper/bin/whisper-init backend
+cd ~/projects/mobile   && bash ~/claude-whisper/bin/whisper-init mobile
 ```
 
-### Message format
+The first `whisper-init` requires the full path. It creates symlinks in `~/.local/bin/`, so subsequent calls can use the short form:
+
+```bash
+cd ~/projects/another && whisper-init another
+```
+
+Each `whisper-init`:
+- Creates `~/.claude-whisper/` (inbox, archive, hook) — once
+- Installs the `UserPromptSubmit` hook in `~/.claude/settings.json` — once
+- Creates symlinks for all commands in `~/.local/bin/` — once
+- Registers the peer in `peers.json` and writes `.whisper-peer` in the project — per project
+
+### 3. Onboard each Claude instance
+
+`whisper-init` prints an onboarding prompt at the end. Copy-paste it into your Claude Code session. Claude will learn the commands and save them to its memory — no need to modify any `CLAUDE.md`.
+
+Example prompt:
+
+```
+You are connected to whisper, a messaging system for Claude Code instances.
+Your peer-id is "frontend". Available commands:
+- whisper-send <peer> "msg" — send a message to a peer
+- whisper-send -t <thread> <peer> "msg" — send with a thread tag
+- whisper-broadcast "msg" — send to all registered peers
+- whisper-list — list active peers and their inbox status
+- whisper-clean [days] — remove archived messages older than N days (default: 7)
+Messages from other instances arrive automatically at each prompt via the hook.
+Save these commands to your memory for future conversations.
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `whisper-init <peer-id>` | Register a project and install the hook |
+| `whisper-send <peer-id> "message"` | Send a message to a peer |
+| `whisper-send -t <thread> <peer-id> "message"` | Send with a thread tag (e.g. `auth-refactor`) |
+| `whisper-broadcast "message"` | Send to all registered peers |
+| `whisper-list` | List peers with inbox status |
+| `whisper-clean [days]` | Remove archived messages older than N days (default: 7) |
+
+Messages are received automatically — the hook injects them into Claude's context at the next prompt. Empty inbox = silent, zero tokens.
+
+## Message format
 
 Messages support full markdown. Send rich, structured updates:
 
 ```bash
-bash ~/claude-whisper/bin/whisper-send backend "## Auth refactor done
+whisper-send backend "## Auth refactor done
 
 - New \`AuthProvider\` with OAuth2 support
 - **Breaking**: \`getUser()\` now returns \`Promise<User | null>\`
@@ -78,22 +110,19 @@ The recipient sees:
 ━━━
 ```
 
-## How it works
+Thread tags appear in brackets:
 
-| Component | Role |
-|-----------|------|
-| `bin/whisper-init` | Creates `~/.claude-whisper/`, registers peer, installs hook |
-| `bin/whisper-send` | Writes a JSON message to the recipient's inbox (atomic) |
-| `bin/whisper-broadcast` | Sends to all registered peers |
-| `hooks/check-inbox.sh` | `UserPromptSubmit` hook — reads inbox, injects into Claude's context |
-
-The hook runs at every prompt. When the inbox is empty, it exits silently in <5ms — zero tokens consumed, zero overhead.
+```
+━━━ 📨 whisper — 1 message(s) ━━━
+> **frontend** (14:32) [auth-refactor]: Check your imports
+━━━
+```
 
 ## Comparison
 
 | | claude-whisper | claude-peers-mcp | claude-ipc-mcp |
 |---|---|---|---|
-| **Lines of code** | ~200 | ~2,000 | ~2,200 |
+| **Lines of code** | ~280 | ~2,000 | ~2,200 |
 | **Daemon** | None | HTTP broker | TCP broker |
 | **Database** | Filesystem | SQLite | SQLite |
 | **Runtime** | bash + jq | Bun | Python 3.12 |
@@ -108,29 +137,6 @@ The hook runs at every prompt. When the inbox is empty, it exits silently in <5m
 - **bash** (v3+)
 - **jq** (`brew install jq` / `apt install jq`)
 - **Claude Code** v2+ (CLI, VS Code, JetBrains, Desktop, Cowork)
-
-## Install prompt
-
-Copy-paste this into any Claude Code instance to install whisper:
-
-```
-Clone https://github.com/druide67/claude-whisper into ~/claude-whisper if not already there.
-Then run: bash ~/claude-whisper/bin/whisper-init <PEER-ID>
-Replace <PEER-ID> with a short name for this project (alphanumeric + dash, e.g. "my-app" or "backend").
-Run the command from this project's root directory.
-```
-
-## Multi-instance setup
-
-Register each project with a unique peer-id:
-
-```bash
-cd ~/projects/frontend  && bash ~/claude-whisper/bin/whisper-init frontend
-cd ~/projects/backend   && bash ~/claude-whisper/bin/whisper-init backend
-cd ~/projects/mobile     && bash ~/claude-whisper/bin/whisper-init mobile
-```
-
-The hook is user-level — installed once, active everywhere. Each project gets its own identity via a `.whisper-peer` file in the project root (add it to your `.gitignore`).
 
 ## Security
 
