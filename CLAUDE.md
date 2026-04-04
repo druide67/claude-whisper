@@ -4,116 +4,110 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # claude-whisper
 
-## Identité
-Projet OSS : IPC inter-instances Claude Code.
-Philosophie : "Le filesystem EST le message bus. Les hooks SONT l'event loop."
+## Identity
+OSS project: Inter-instance IPC for Claude Code.
+Philosophy: "The filesystem IS the message bus. Hooks ARE the event loop."
 
-## Principes
-- Zero daemon, zero tokens au repos, zero dépendance (bash + jq)
-- Compatible CLI + Cowork (hooks dans `~/.claude/settings.json` — scope user)
-- Sécurité par design : permissions Unix, pas de surface réseau
-- Target : < 200 LOC total
+## Principles
+- Zero daemon, zero tokens at rest, zero dependencies (bash + jq)
+- Works on CLI, VS Code, JetBrains, Desktop, Cowork (hooks in `~/.claude/settings.json` — user scope)
+- Security by design: Unix permissions, no network surface
+- ~280 LOC total
 
-## Stack
-- Bash (POSIX-compatible quand possible)
-- jq pour le parsing JSON
-- Hooks Claude Code (UserPromptSubmit via `hookSpecificOutput.additionalContext`)
-- MCP server optionnel (bash stdio ou Node minimal, ~80 LOC)
-
-## Commandes de développement
+## Dev commands
 
 ```bash
-# Initialiser un pair (crée ~/.claude-whisper/, configure le hook)
-bash bin/whisper-init <peer-id>
-
-# Envoyer un message à un pair
-bash bin/whisper-send <peer-id> "message"
-
-# Lancer les tests (bats-core requis : brew install bats-core)
+# Run all tests
 bats tests/
 
-# Lancer un test précis
+# Run a specific test
 bats tests/check-inbox.bats
 
-# Vérifier la syntaxe bash
+# Syntax check
 bash -n hooks/check-inbox.sh
 bash -n bin/whisper-send
 
-# Vérifier que jq est disponible
-jq --version
+# Test commands (symlinks in ~/.local/bin/)
+whisper-list
+whisper-send <peer-id> "message"
+whisper-send -t <thread> <peer-id> "message"
+whisper-send -f <from> <peer-id> "message"
+whisper-broadcast "message"
+whisper-clean [days]
 ```
 
 ## Architecture
 
-### Flux de communication
+### Communication flow
 
 ```
 Instance A (sender)          Filesystem                    Instance B (receiver)
        |                    ~/.claude-whisper/                      |
-       |--[MCP: whisper_send]-->                                    |
-       |    écrit inbox/B/msg-<ts>.json                             |
+       |-- whisper-send B "hello" -->                               |
+       |    writes inbox/B/msg-<ts>.json                            |
        |                                                            |
-       |                         <--[user tape un prompt]-----------|
-       |                    hook check-inbox.sh s'exécute           |
-       |                    injecte messages via additionalContext   |
-       |                                          [LLM voit msgs]-->|
+       |                         <--[user types a prompt]-----------|
+       |                    hook check-inbox.sh runs                |
+       |                    injects messages via plain stdout       |
+       |                                          [LLM sees msgs]-->|
 ```
 
-Le hook `UserPromptSubmit` est l'event loop — il tourne à chaque prompt, 0 token quand inbox vide.
+The `UserPromptSubmit` hook is the event loop — runs at every prompt, 0 tokens when inbox is empty.
 
-### Composants et leur interaction
+### Components
 
-**Réception** (passive, filesystem → LLM) :
-- `hooks/check-inbox.sh` — hook `UserPromptSubmit` : lit `~/.claude-whisper/inbox/<peer-id>/msg-*.json`, injecte via `hookSpecificOutput.additionalContext` (JSON), archive les messages lus, sort silencieusement si inbox vide
-- `hooks/register-peer.sh` — hook `SessionStart` (optionnel) : met à jour `peers.json` avec `last_seen`
+**Reception** (passive, filesystem → LLM):
+- `hooks/check-inbox.sh` — `UserPromptSubmit` hook: reads `.whisper-peer` from CWD, scans `~/.claude-whisper/inbox/<peer-id>/msg-*.json`, outputs plain text to stdout (exit 0), archives read messages, silent exit if inbox empty
 
-**Emission** (active, LLM → filesystem) :
-- `bin/whisper-send` — script CLI : écrit atomiquement (`msg.tmp` → `mv`) dans `inbox/<peer-id>/`
-- MCP server (`lib/mcp-server.sh` ou Node minimal) — expose 4 outils : `whisper_send`, `whisper_peers`, `whisper_status`, `whisper_broadcast`
-- `bin/whisper-init` — setup initial : crée `~/.claude-whisper/` (0700), `inbox/` (0700), injecte le hook dans `~/.claude/settings.json`
+**Sending** (active, LLM → filesystem):
+- `bin/whisper-send` — sends a message to a peer's inbox (atomic write via `.tmp` + `mv`). Flags: `-t thread`, `-f from`
+- `bin/whisper-broadcast` — sends to all peers except self. Passes through `-t` and `-f` flags
+- `bin/whisper-init` — setup: creates `~/.claude-whisper/`, installs hook in `settings.json`, creates symlinks in `~/.local/bin/`, writes `.whisper-peer` in project dir
 
-**Registre** :
-- `~/.claude-whisper/peers.json` — pairs actifs avec `last_seen`. Un pair absent depuis >2h est stale.
-- `~/.claude-whisper/.current-peer` — peer-id de l'instance courante (lu par le hook)
+**Utilities**:
+- `bin/whisper-list` — lists peers with inbox count
+- `bin/whisper-clean` — removes archived messages older than N days (default: 7)
 
-### Format des fichiers
+**Registry**:
+- `~/.claude-whisper/peers.json` — registered peers with `last_seen` and `cwd`
+- `.whisper-peer` — peer-id file in each project's root directory (gitignored)
 
-**Message** (`inbox/<peer-id>/msg-<timestamp>-<rand>.json`) :
+### Message format
+
+`inbox/<peer-id>/msg-<timestamp>-<rand>.json`:
 ```json
 {
   "id": "msg-1712150400-a3f2",
-  "from": "openclaw",
-  "to": "asiai",
+  "from": "frontend",
+  "to": "backend",
   "timestamp": "2026-04-03T14:00:00Z",
   "content": "...",
   "priority": "normal",
-  "ttl": 3600
+  "ttl": 3600,
+  "thread": "auth-refactor"
 }
 ```
 
-**Hook output** (stdout du hook, format JSON requis par le bug #13912) :
-```json
-{ "hookSpecificOutput": { "additionalContext": "..." } }
-```
+The `thread` field is optional (set via `-t` flag).
+
+### Hook output
+
+Plain text on stdout (exit code 0). Do NOT use JSON `hookSpecificOutput` — it causes "UserPromptSubmit hook error" in practice despite being documented.
 
 ## Conventions
-- Messages JSON dans `~/.claude-whisper/inbox/<peer-id>/`
-- Nommage atomique : écrire en `.tmp` puis `mv` (évite les race conditions)
-- Répertoire `~/.claude-whisper/` en 0700, messages en 0600
-- Validation des peer-id : alphanumérique + tiret uniquement (`^[a-zA-Z0-9-]+$`)
+- Messages JSON in `~/.claude-whisper/inbox/<peer-id>/`
+- Atomic naming: write to `.tmp` then `mv`
+- `~/.claude-whisper/` is `0700`, messages are `0600`
+- Peer-id validation: alphanumeric + dash only (`^[a-zA-Z0-9-]+$`)
+- Output truncated at 9000 chars to stay under 10k limit
 
-## Contraintes techniques connues
-- **Bug #10225** : hooks dans plugins ne s'exécutent pas → définir dans `~/.claude/settings.json`
-- **Bug #13912** : stdout brut fragile dans `UserPromptSubmit` → utiliser JSON `hookSpecificOutput`
-- **Limite** : 10 000 chars sur `additionalContext` → tronquer/résumer si nécessaire
-- **Latence hook** : rester < 200ms (shell only, pas de requêtes réseau)
+## Known technical constraints
+- **Bug #10225**: hooks in plugins don't execute → define in `~/.claude/settings.json`
+- **hookSpecificOutput broken**: JSON format causes hook errors → use plain stdout
+- **Hook format in settings.json**: `{"matcher": "", "hooks": [{"type": "command", "command": "..."}]}`
+- **Hook latency**: stay < 200ms (shell only, no network requests)
 
 ## Structure
-- `bin/` — scripts exécutables (`whisper-init`, `whisper-send`)
-- `hooks/` — hooks Claude Code (`check-inbox.sh`, `register-peer.sh`)
-- `lib/` — fonctions partagées (et MCP server)
-- `tests/` — tests bats-core
-- `docs/` — ADR, specs, architecture
-
-## Référence
-- ADR complet : `docs/ADR - Communication Inter-Instances Claude Code.md`
+- `bin/` — CLI commands (`whisper-init`, `whisper-send`, `whisper-broadcast`, `whisper-list`, `whisper-clean`)
+- `hooks/` — Claude Code hooks (`check-inbox.sh`)
+- `tests/` — bats-core tests (32 tests)
