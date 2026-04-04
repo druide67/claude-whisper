@@ -66,3 +66,23 @@ teardown() {
   [[ "$output" == *"📤"* ]]
   [[ "$output" == *"test-bob"* ]]
 }
+
+@test "thread flag adds thread to message" {
+  bash "$BIN/whisper-send" -t auth-refactor test-bob "check imports"
+  shopt -s nullglob
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  [ "$(jq -r '.thread' "${files[0]}")" = "auth-refactor" ]
+}
+
+@test "thread flag shows in output" {
+  run bash "$BIN/whisper-send" -t my-thread test-bob "hello"
+  [[ "$output" == *"[my-thread]"* ]]
+}
+
+@test "--from flag overrides .whisper-peer" {
+  run bash "$BIN/whisper-send" -f custom-sender test-bob "hello"
+  [ "$status" -eq 0 ]
+  shopt -s nullglob
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  [ "$(jq -r '.from' "${files[0]}")" = "custom-sender" ]
+}

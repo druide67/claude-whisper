@@ -21,7 +21,7 @@ while IFS=$'\t' read -r id cwd last_seen; do
   INBOX="$WHISPER_DIR/inbox/$id"
   PENDING=0
   if [ -d "$INBOX" ]; then
-    PENDING=$(find "$INBOX" -name 'msg-*.json' 2>/dev/null | wc -l | tr -d ' ')
+    PENDING=$(find "$INBOX" -name 'msg-*.json' 2>/dev/null | grep -c . || echo 0)
   fi
 
   # Mark self
