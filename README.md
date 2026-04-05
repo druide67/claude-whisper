@@ -110,7 +110,7 @@ Thread tags appear in brackets:
 
 | | claude-whisper | claude-peers-mcp | claude-ipc-mcp |
 |---|---|---|---|
-| **Lines of code** | ~280 | ~2,000 | ~2,200 |
+| **Lines of code** | ~300 | ~2,000 | ~2,200 |
 | **Daemon** | None | HTTP broker | TCP broker |
 | **Database** | Filesystem | SQLite | SQLite |
 | **Runtime** | bash + jq | Bun | Python 3.12 |
