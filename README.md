@@ -14,25 +14,6 @@ Running multiple Claude Code instances on the same machine? They can't talk to e
 
 **Works everywhere Claude Code runs** — CLI, VS Code, JetBrains, Desktop. No plugin compatibility issues, no CLI-only limitations. Hooks are defined at user level, active across all surfaces.
 
-### How it works
-
-1. **Send** — `whisper-send` writes a JSON file to `~/.claude-whisper/inbox/<peer>/`
-2. **Receive** — a `UserPromptSubmit` hook checks the inbox at every prompt
-3. **Empty inbox** — hook exits silently in <5ms — zero tokens, zero overhead
-
-```
-💻 Instance A                        💻 Instance B
-     │                                    │
-     │  whisper-send B "hello"            │
-     └──── 📄 ──→ ~/.claude-whisper/ ─────┘
-                    inbox/B/msg.json
-                         │
-              user types a prompt
-                         │
-                    📨 hook reads inbox
-                    ✉️  message shown to Claude
-```
-
 ## Getting started
 
 ### 1. Clone (once per machine)
@@ -104,6 +85,25 @@ Thread tags appear in brackets:
 ━━━ 📨 whisper — 1 message(s) ━━━
 > **frontend** (14:32) [auth-refactor]: Check your imports
 ━━━
+```
+
+## How it works
+
+1. **Send** — `whisper-send` writes a JSON file to `~/.claude-whisper/inbox/<peer>/`
+2. **Receive** — a `UserPromptSubmit` hook checks the inbox at every prompt
+3. **Empty inbox** — hook exits silently in <5ms — zero tokens, zero overhead
+
+```
+💻 Instance A                        💻 Instance B
+     │                                    │
+     │  whisper-send B "hello"            │
+     └──── 📄 ──→ ~/.claude-whisper/ ─────┘
+                    inbox/B/msg.json
+                         │
+              user types a prompt
+                         │
+                    📨 hook reads inbox
+                    ✉️  message shown to Claude
 ```
 
 ## Comparison
