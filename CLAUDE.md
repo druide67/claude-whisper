@@ -112,3 +112,7 @@ Plain text on stdout (exit code 0). Do NOT use JSON `hookSpecificOutput` — it 
 - `bin/` — CLI commands (`whisper-init`, `whisper-send`, `whisper-broadcast`, `whisper-list`, `whisper-clean`)
 - `hooks/` — Claude Code hooks (`check-inbox.sh`)
 - `tests/` — bats-core tests (32 tests)
+
+## Working rules
+- On complex problems: PROPOSE a solution and WAIT for approval before implementing
+- On simple fixes (typos, obvious bugs): fix directly

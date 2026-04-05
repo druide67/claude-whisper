@@ -12,17 +12,26 @@ Running multiple Claude Code instances on the same machine? They can't talk to e
 
 **claude-whisper** uses the filesystem as a message bus and Claude Code's native hooks as the event loop. Messages are JSON files. Delivery is atomic. Reception costs zero tokens when the inbox is empty.
 
-**Works everywhere Claude Code runs** — CLI, VS Code, JetBrains, Desktop app, Cowork. No plugin compatibility issues, no CLI-only limitations. Hooks are defined at user level, active across all surfaces.
+**Works everywhere Claude Code runs** — CLI, VS Code, JetBrains, Desktop. No plugin compatibility issues, no CLI-only limitations. Hooks are defined at user level, active across all surfaces.
 
-```
-Instance A                    Filesystem                    Instance B
-    |                    ~/.claude-whisper/                      |
-    |-- whisper-send B "hello" -->                               |
-    |    writes inbox/B/msg.json                                 |
-    |                                                            |
-    |                         <-- user types a prompt -----------|
-    |                    hook reads inbox, injects context       |
-    |                                        Claude sees msg --> |
+### How it works
+
+1. **Send** — `whisper-send` writes a JSON file to `~/.claude-whisper/inbox/<peer>/`
+2. **Receive** — a `UserPromptSubmit` hook checks the inbox at every prompt
+3. **Empty inbox** — hook exits silently in <5ms — zero tokens, zero overhead
+
+```mermaid
+sequenceDiagram
+    participant A as Instance A
+    participant FS as ~/.claude-whisper/
+    participant B as Instance B
+
+    A->>FS: whisper-send B "refactor done"
+    Note over FS: 📄 inbox/B/msg-1234.json
+
+    Note over B: user types a prompt
+    FS->>B: 📨 hook injects message into context
+    Note over B: Claude sees the message<br/>and displays it to the user
 ```
 
 ## Getting started
@@ -37,17 +46,11 @@ git clone https://github.com/druide67/claude-whisper.git ~/claude-whisper
 
 Open your project in Claude Code (CLI, VS Code, or JetBrains) and say:
 
-> Install whisper for this project. Run `bash ~/claude-whisper/bin/whisper-init my-app` (replace `my-app` with a short name for this project).
+> Install whisper for this project with peer-id "my-app". Run `bash ~/claude-whisper/bin/whisper-init my-app`.
 
-Claude will execute the command, see the available commands in the output, and save them to its memory. **That's it — one step per project.**
+Claude executes the command, sees the available commands in the output, and saves them to its memory. **That's it — one step per project.**
 
-Repeat for each project with a unique peer-id:
-
-> Install whisper with peer-id "backend"
-
-> Install whisper with peer-id "mobile"
-
-After the first init, `whisper-init` is in the PATH — Claude can just run `whisper-init <peer-id>`.
+Repeat for each project with a unique peer-id (e.g. `backend`, `mobile`, `api`). After the first init, `whisper-init` is in the PATH — Claude can just run `whisper-init <peer-id>`.
 
 <details>
 <summary>Manual setup (without Claude)</summary>
@@ -134,7 +137,7 @@ Thread tags appear in brackets:
 
 ## Limitations
 
-- **Cowork (sandbox)**: Cowork sessions run in a Linux sandbox. They can **send** messages (via Desktop Commander executing on the host), but cannot **receive** automatically (the hook runs inside the sandbox where `~/.claude-whisper/` doesn't exist). Use `whisper-send --from <peer-id>` from Cowork.
+- **Cowork**: can send messages but cannot receive automatically (sandbox limitation).
 - **Single machine**: whisper uses the local filesystem — no cross-machine messaging.
 - **Not real-time**: messages are delivered at the recipient's next prompt, not instantly.
 
