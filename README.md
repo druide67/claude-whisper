@@ -33,33 +33,31 @@ Instance A                    Filesystem                    Instance B
 git clone https://github.com/druide67/claude-whisper.git ~/claude-whisper
 ```
 
-### 2. Register each project
+### 2. Tell Claude to install
 
-From each project's root directory:
+Open your project in Claude Code (CLI, VS Code, or JetBrains) and say:
+
+> Install whisper for this project. Run `bash ~/claude-whisper/bin/whisper-init my-app` (replace `my-app` with a short name for this project).
+
+Claude will execute the command, see the available commands in the output, and save them to its memory. **That's it — one step per project.**
+
+Repeat for each project with a unique peer-id:
+
+> Install whisper with peer-id "backend"
+
+> Install whisper with peer-id "mobile"
+
+After the first init, `whisper-init` is in the PATH — Claude can just run `whisper-init <peer-id>`.
+
+<details>
+<summary>Manual setup (without Claude)</summary>
 
 ```bash
-cd ~/projects/frontend && bash ~/claude-whisper/bin/whisper-init frontend
-cd ~/projects/backend  && bash ~/claude-whisper/bin/whisper-init backend
-cd ~/projects/mobile   && bash ~/claude-whisper/bin/whisper-init mobile
+cd ~/projects/my-app && bash ~/claude-whisper/bin/whisper-init my-app
 ```
 
-The first `whisper-init` requires the full path. It creates symlinks in `~/.local/bin/`, so subsequent calls can use the short form:
-
-```bash
-cd ~/projects/another && whisper-init another
-```
-
-Each `whisper-init`:
-- Creates `~/.claude-whisper/` (inbox, archive, hook) — once
-- Installs the `UserPromptSubmit` hook in `~/.claude/settings.json` — once
-- Creates symlinks for all commands in `~/.local/bin/` — once
-- Registers the peer in `peers.json` and writes `.whisper-peer` in the project — per project
-
-### 3. Onboard each Claude instance
-
-`whisper-init` prints a ready-to-use onboarding prompt at the end — with your actual peer-id already filled in. Just copy-paste it into your Claude Code session. Claude will learn the commands and save them to its memory. No need to modify any `CLAUDE.md`.
-
-> **Don't copy the example below** — use the output from `whisper-init`, which contains your real peer-id.
+Then copy-paste the onboarding prompt (printed at the end) into your Claude Code session so it learns the commands.
+</details>
 
 ## Commands
 
