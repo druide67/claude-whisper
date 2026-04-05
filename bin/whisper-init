@@ -85,13 +85,19 @@ echo ""
 echo "── Onboarding prompt (copy-paste into Claude Code) ──"
 echo ""
 cat <<ONBOARDING
-You are connected to whisper, a messaging system for Claude Code instances.
+You are connected to whisper, a peer-to-peer messaging system for Claude Code instances.
 Your peer-id is "$PEER_ID". Available commands:
-- whisper-send <peer> "msg" — send a message to a peer
+- whisper-send <peer> "msg" — send a message directly to a peer
 - whisper-send -t <thread> <peer> "msg" — send with a thread tag
 - whisper-broadcast "msg" — send to all registered peers
 - whisper-list — list active peers and their inbox status
 - whisper-clean [days] — remove archived messages older than N days (default: 7)
-Messages from other instances arrive automatically at each prompt via the hook.
+Important: whisper is peer-to-peer. Send messages directly to the target peer-id, not to a hub.
+Run whisper-list to see available peers. Messages arrive automatically at each prompt via the hook.
 Save these commands to your memory for future conversations.
 ONBOARDING
+
+echo ""
+echo "── Active peers ──"
+echo ""
+bash "$REPO_DIR/bin/whisper-list" 2>/dev/null || true

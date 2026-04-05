@@ -43,6 +43,12 @@ if [[ ! "$FROM" =~ ^[a-zA-Z0-9-]+$ ]]; then
   echo "Error: corrupted .whisper-peer (got: $FROM)" >&2; exit 1
 fi
 
+# Warn if recipient is unknown
+PEERS_FILE="$WHISPER_DIR/peers.json"
+if [ -f "$PEERS_FILE" ] && ! jq -e --arg to "$TO" '.peers[$to]' "$PEERS_FILE" > /dev/null 2>&1; then
+  echo "⚠️  Warning: peer '$TO' is not in peers.json. Run whisper-list to see known peers." >&2
+fi
+
 # Ensure recipient inbox exists
 mkdir -p "$WHISPER_DIR/inbox/$TO"
 
