@@ -20,18 +20,17 @@ Running multiple Claude Code instances on the same machine? They can't talk to e
 2. **Receive** — a `UserPromptSubmit` hook checks the inbox at every prompt
 3. **Empty inbox** — hook exits silently in <5ms — zero tokens, zero overhead
 
-```mermaid
-sequenceDiagram
-    participant A as Instance A
-    participant FS as ~/.claude-whisper/
-    participant B as Instance B
-
-    A->>FS: whisper-send B "refactor done"
-    Note over FS: 📄 inbox/B/msg-1234.json
-
-    Note over B: user types a prompt
-    FS->>B: 📨 hook injects message into context
-    Note over B: Claude sees the message<br/>and displays it to the user
+```
+💻 Instance A                        💻 Instance B
+     │                                    │
+     │  whisper-send B "hello"            │
+     └──── 📄 ──→ ~/.claude-whisper/ ─────┘
+                    inbox/B/msg.json
+                         │
+              user types a prompt
+                         │
+                    📨 hook reads inbox
+                    ✉️  message shown to Claude
 ```
 
 ## Getting started
