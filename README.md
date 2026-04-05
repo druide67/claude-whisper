@@ -1,5 +1,8 @@
 # claude-whisper
 
+[![Tests](https://github.com/druide67/claude-whisper/actions/workflows/tests.yml/badge.svg)](https://github.com/druide67/claude-whisper/actions/workflows/tests.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 > Inter-instance communication that costs zero tokens and zero daemons. Works everywhere — CLI, VS Code, JetBrains, Desktop.
 
 Lightweight Inter-Process Communication (IPC) for [Claude Code](https://claude.ai/code) instances. The filesystem is the message bus. Hooks are the event loop.
