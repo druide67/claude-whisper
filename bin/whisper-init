@@ -82,6 +82,8 @@ echo "   Project: $PROJECT_DIR"
 echo "   Hook: $HOOK_STATUS"
 echo "   Commands: $SYMLINK_STATUS → $BIN_DIR/"
 echo ""
+echo "   Tip: run 'whisper-broadcast \"Hello, I am $PEER_ID!\"' to announce yourself."
+echo ""
 echo "── Onboarding prompt (copy-paste into Claude Code) ──"
 echo ""
 cat <<ONBOARDING
