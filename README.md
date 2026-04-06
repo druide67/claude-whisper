@@ -2,6 +2,11 @@
 
 [![Tests](https://github.com/druide67/claude-whisper/actions/workflows/tests.yml/badge.svg)](https://github.com/druide67/claude-whisper/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![bash](https://img.shields.io/badge/bash-%23121011.svg?logo=gnu-bash&logoColor=white)](#)
+[![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)](#requirements)
+[![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](#requirements)
+[![LOC](https://img.shields.io/badge/~300%20LOC-green)](#)
+[![zero daemon](https://img.shields.io/badge/zero%20daemon-purple)](#)
 
 > Inter-instance communication that costs zero tokens and zero daemons. Works everywhere — CLI, VS Code, JetBrains, Desktop.
 
