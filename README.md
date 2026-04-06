@@ -12,7 +12,9 @@
 
 Your [Claude Code](https://claude.ai/code) instances can now talk to each other. ~300 lines of bash — no server, no setup.
 
-![demo](assets/demo.gif)
+<p align="center">
+  <img src="assets/demo.gif" alt="demo" width="600">
+</p>
 
 ## The problem
 
