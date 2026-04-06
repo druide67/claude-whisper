@@ -21,7 +21,7 @@ teardown() {
 
 @test "shows inbox count 0 for empty inbox" {
   run bash "$BIN/whisper-list"
-  [[ "$output" == *"inbox: 0"* ]]
+  [[ "$output" == *"| 0 |"* ]]
 }
 
 @test "shows correct inbox count with messages" {
@@ -29,7 +29,7 @@ teardown() {
   echo '{}' > "$WHISPER_DIR/inbox/test-alice/msg-test-1.json"
   echo '{}' > "$WHISPER_DIR/inbox/test-alice/msg-test-2.json"
   run bash "$BIN/whisper-list"
-  [[ "$output" == *"inbox: 2"* ]]
+  [[ "$output" == *"| 2 |"* ]]
 }
 
 @test "fails when no peers registered" {

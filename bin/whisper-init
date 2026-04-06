@@ -15,8 +15,15 @@ if [[ ! "$PEER_ID" =~ ^[a-zA-Z0-9-]+$ ]]; then
   exit 1
 fi
 
-# Locate repo hooks (relative to this script)
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Locate repo (resolve symlinks to find the real script location)
+SCRIPT="$0"
+while [ -L "$SCRIPT" ]; do
+  DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+  SCRIPT=$(readlink "$SCRIPT")
+  # Handle relative symlinks
+  [[ "$SCRIPT" != /* ]] && SCRIPT="$DIR/$SCRIPT"
+done
+REPO_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
 
 # Create directory structure
 mkdir -p "$WHISPER_DIR/inbox/$PEER_ID" "$WHISPER_DIR/archive" "$WHISPER_DIR/hooks"
@@ -76,32 +83,40 @@ else
   done
 fi
 
-echo "📡 Whisper initialized"
-echo "   Peer: $PEER_ID"
-echo "   Project: $PROJECT_DIR"
-echo "   Hook: $HOOK_STATUS"
-echo "   Commands: $SYMLINK_STATUS → $BIN_DIR/"
-echo ""
-echo "── Commands ──"
-echo ""
-echo "  whisper-send <peer> \"msg\"           Send a message to a peer"
-echo "  whisper-send -t <thread> <peer> ...  Send with a thread tag"
-echo "  whisper-send -f <from> <peer> ...    Send with a custom sender (Cowork/CI)"
-echo "  whisper-broadcast \"msg\"              Send to all registered peers"
-echo "  whisper-list                         List peers and inbox status"
-echo "  whisper-clean [days]                 Clean archive (default: 7 days)"
-echo ""
-echo "── Active peers ──"
-echo ""
+DISPLAY_DIR=$(echo "$PROJECT_DIR" | sed "s|^$HOME|~|")
+
+cat <<OUTPUT
+# 📡 Whisper initialized
+
+| | |
+|---|---|
+| **Peer** | $PEER_ID |
+| **Project** | $DISPLAY_DIR |
+| **Hook** | ✅ $HOOK_STATUS |
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| \`whisper-send <peer> "msg"\` | Send a message |
+| \`whisper-send -t <thread> <peer> "msg"\` | Send with thread tag |
+| \`whisper-broadcast "msg"\` | Send to all peers |
+| \`whisper-list\` | List peers and inbox |
+| \`whisper-clean [days]\` | Clean archive (default: 7) |
+
+## Active peers
+OUTPUT
+
 bash "$REPO_DIR/bin/whisper-list" 2>/dev/null || true
-echo ""
-echo "Tip: run 'whisper-broadcast \"Hello, I am $PEER_ID!\"' to announce yourself."
-echo ""
-# Instructions for Claude (read by Claude when it executes this script)
-cat <<CLAUDE_INSTRUCTIONS
-── For Claude Code ──
-You are connected to whisper, a peer-to-peer messaging system for Claude Code instances.
-Your peer-id is "$PEER_ID". Whisper is peer-to-peer: send messages directly to the target
-peer-id, not to a hub. Messages from other instances arrive automatically at each prompt.
-Save the commands listed above to your memory for future conversations.
-CLAUDE_INSTRUCTIONS
+
+cat <<OUTPUT
+
+> **Tip**: run \`whisper-broadcast "Hello, I am $PEER_ID!"\` to announce yourself.
+
+## For Claude Code
+
+> You are connected to **whisper**, a peer-to-peer messaging system for Claude Code instances.
+> Your peer-id is \`$PEER_ID\`. Whisper is peer-to-peer: send messages directly to the target
+> peer-id, not to a hub. Messages from other instances arrive automatically at each prompt.
+> Save the commands listed above to your memory for future conversations.
+OUTPUT

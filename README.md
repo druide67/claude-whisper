@@ -7,6 +7,8 @@
 
 Lightweight Inter-Process Communication (IPC) for [Claude Code](https://claude.ai/code) instances. The filesystem is the message bus. Hooks are the event loop.
 
+![demo](assets/demo.gif)
+
 ## The problem
 
 Running multiple Claude Code instances on the same machine? They can't talk to each other. Existing solutions require daemons, databases, runtime dependencies, and burn tokens on polling. Worse — they only work in the CLI. Switch to VS Code or JetBrains and you lose inter-instance communication entirely.

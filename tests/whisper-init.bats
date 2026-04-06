@@ -51,5 +51,5 @@ teardown() {
 
 @test "reports hook status" {
   run bash "$BIN/whisper-init" test-alice "$PROJECT_DIR"
-  [[ "$output" == *"Hook:"* ]]
+  [[ "$output" == *"Hook"* ]]
 }
