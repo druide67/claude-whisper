@@ -5,13 +5,13 @@
 
 > Inter-instance communication that costs zero tokens and zero daemons. Works everywhere — CLI, VS Code, JetBrains, Desktop.
 
-Lightweight Inter-Process Communication (IPC) for [Claude Code](https://claude.ai/code) instances. The filesystem is the message bus. Hooks are the event loop.
+Your [Claude Code](https://claude.ai/code) instances can now talk to each other. ~300 lines of bash — no server, no setup.
 
 ![demo](assets/demo.gif)
 
 ## The problem
 
-Running multiple Claude Code instances on the same machine? They can't talk to each other. Existing solutions require daemons, databases, runtime dependencies, and burn tokens on polling. Worse — they only work in the CLI. Switch to VS Code or JetBrains and you lose inter-instance communication entirely.
+Existing solutions for multi-instance communication only work in the CLI — switch to VS Code or JetBrains and you're out of luck. They also require daemons, databases, runtime dependencies, and burn tokens on polling.
 
 ## The solution
 
@@ -124,10 +124,12 @@ Thread tags appear in brackets:
 | **Setup time** | < 1 min | 5-10 min | 10-15 min |
 | **IDE support** | CLI, VS Code, JetBrains, Desktop | CLI only | CLI only |
 
+*Competitor figures are approximate, based on public repositories.*
+
 ## Requirements
 
 - **macOS** or **Linux** (WSL on Windows)
-- **bash** (v3+)
+- **bash** (included on macOS and Linux)
 - **jq** (`brew install jq` / `apt install jq`)
 - **Claude Code** v2+ (CLI, VS Code, JetBrains, Desktop)
 
@@ -144,6 +146,12 @@ Thread tags appear in brackets:
 - **Cowork**: can send messages but cannot receive automatically (sandbox limitation).
 - **Single machine**: whisper uses the local filesystem — no cross-machine messaging.
 - **Not real-time**: messages are delivered at the recipient's next prompt, not instantly.
+
+## Contributing
+
+Issues and PRs welcome. Run `bats tests/` before submitting. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+If claude-whisper is useful to you, a star helps others discover it.
 
 ## License
 
