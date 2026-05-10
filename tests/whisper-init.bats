@@ -44,6 +44,26 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
+@test "--help shows usage and exits 0 without registering a peer" {
+  run bash -c "bash '$BIN/whisper-init' --help 2>&1"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Usage:"* ]]
+  [ ! -f "$WHISPER_DIR/peers.json" ] || ! jq -e '.peers["--help"]' "$WHISPER_DIR/peers.json"
+  [ ! -d "$WHISPER_DIR/inbox/--help" ]
+}
+
+@test "-h shows usage and exits 0" {
+  run bash -c "bash '$BIN/whisper-init' -h 2>&1"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Usage:"* ]]
+}
+
+@test "rejects peer-id starting with a dash (flag-shaped)" {
+  run bash "$BIN/whisper-init" --some-flag "$PROJECT_DIR"
+  [ "$status" -ne 0 ]
+  [ ! -d "$WHISPER_DIR/inbox/--some-flag" ]
+}
+
 @test "copies hook to whisper dir" {
   bash "$BIN/whisper-init" test-alice "$PROJECT_DIR"
   [ -x "$WHISPER_DIR/hooks/check-inbox.sh" ]

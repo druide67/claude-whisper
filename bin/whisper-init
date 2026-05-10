@@ -3,15 +3,38 @@ set -euo pipefail
 
 WHISPER_DIR="${WHISPER_DIR:-$HOME/.claude-whisper}"
 
-usage() { echo "Usage: whisper-init <peer-id> [project-dir]" >&2; exit 1; }
+usage() {
+  cat >&2 <<'EOF'
+Usage: whisper-init <peer-id> [project-dir]
 
-[ $# -lt 1 ] && usage
+Sets up whisper for a project: registers the peer-id, installs the hook,
+creates the inbox directory and writes .whisper-peer in the project root.
+
+Arguments:
+  <peer-id>      Required. Must start with a letter or digit and contain
+                 only letters, digits, and dashes (no leading dash).
+  [project-dir]  Optional. Defaults to the current working directory.
+
+Options:
+  -h, --help     Show this help.
+EOF
+  exit "${1:-1}"
+}
+
+# Intercept help flags BEFORE peer-id parsing — otherwise --help would be
+# registered as a fantôme peer (bug observed 2026-05-07 from claude-merlin).
+case "${1:-}" in
+  -h|--help|help) usage 0 ;;
+  '') usage 1 ;;
+esac
+
 PEER_ID="$1"
 PROJECT_DIR="${2:-$(pwd)}"
 
-# Validate peer-id: alphanumeric + dash only
-if [[ ! "$PEER_ID" =~ ^[a-zA-Z0-9-]+$ ]]; then
-  echo "Error: peer-id must be alphanumeric + dash (got: $PEER_ID)" >&2
+# Validate peer-id: alphanumeric + dash, must START with alphanumeric.
+# Leading dash forbidden so flag-shaped strings (--foo, -h) can't slip through.
+if [[ ! "$PEER_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]]; then
+  echo "Error: peer-id must start with a letter or digit and contain only letters, digits, and dashes (got: $PEER_ID)" >&2
   exit 1
 fi
 

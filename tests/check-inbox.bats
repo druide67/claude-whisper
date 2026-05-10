@@ -198,42 +198,58 @@ _make_msg() {
 # G3 — hop_count drop
 # ---------------------------------------------------------------------------
 
-@test "G3: drops messages with hop_count > 5" {
+@test "G3: renders messages with hop_count > HOP_MAX with a visible warning" {
   mkdir -p "$WHISPER_DIR/inbox/test-bob"
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   jq -n --arg ts "$NOW" \
-    '{id: "msg-hop-6", from: "test-alice", to: "test-bob", timestamp: $ts, content: "should be dropped", priority: "normal", ttl: 3600, hop_count: 6}' \
-    > "$WHISPER_DIR/inbox/test-bob/msg-hop-6.json"
+    '{id: "msg-hop-9", from: "test-alice", to: "test-bob", timestamp: $ts, content: "loop suspect", priority: "normal", ttl: 3600, hop_count: 9}' \
+    > "$WHISPER_DIR/inbox/test-bob/msg-hop-9.json"
 
   run bash "$HOOKS/check-inbox.sh"
   [ "$status" -eq 0 ]
-  [ -z "$output" ]                                           # silent drop
-  [ ! -f "$WHISPER_DIR/inbox/test-bob/msg-hop-6.json" ]      # moved
-  [ -f "$WHISPER_DIR/archive/msg-hop-6.json" ]               # archived
+  [[ "$output" == *"loop suspect"* ]]                        # rendered, not silently dropped
+  [[ "$output" == *"HOP=9"* ]]                                # warning is visible
+  [ ! -f "$WHISPER_DIR/inbox/test-bob/msg-hop-9.json" ]      # archived after render
+  [ -f "$WHISPER_DIR/archive/msg-hop-9.json" ]
 }
 
-@test "G3: delivers messages with hop_count = 5 (boundary)" {
+@test "G3: delivers messages with hop_count = HOP_MAX without warning (boundary)" {
   mkdir -p "$WHISPER_DIR/inbox/test-bob"
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   jq -n --arg ts "$NOW" \
-    '{id: "msg-hop-5", from: "test-alice", to: "test-bob", timestamp: $ts, content: "still delivered", priority: "normal", ttl: 3600, hop_count: 5}' \
-    > "$WHISPER_DIR/inbox/test-bob/msg-hop-5.json"
+    '{id: "msg-hop-8", from: "test-alice", to: "test-bob", timestamp: $ts, content: "still delivered", priority: "normal", ttl: 3600, hop_count: 8}' \
+    > "$WHISPER_DIR/inbox/test-bob/msg-hop-8.json"
 
   run bash "$HOOKS/check-inbox.sh"
   [ "$status" -eq 0 ]
   [[ "$output" == *"still delivered"* ]]
+  [[ "$output" != *"HOP=8"* ]]                                # no warning at the boundary
 }
 
-@test "G3: WHISPER_HOP_MAX env var changes the threshold" {
+@test "G3: silent drop above HOP_HARD (runaway loop)" {
   mkdir -p "$WHISPER_DIR/inbox/test-bob"
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
   jq -n --arg ts "$NOW" \
-    '{id: "msg-hop-3", from: "test-alice", to: "test-bob", timestamp: $ts, content: "drop me", priority: "normal", ttl: 3600, hop_count: 3}' \
+    '{id: "msg-hop-25", from: "test-alice", to: "test-bob", timestamp: $ts, content: "runaway", priority: "normal", ttl: 3600, hop_count: 25}' \
+    > "$WHISPER_DIR/inbox/test-bob/msg-hop-25.json"
+
+  run bash "$HOOKS/check-inbox.sh"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -f "$WHISPER_DIR/archive/msg-hop-25.json" ]
+}
+
+@test "G3: WHISPER_HOP_MAX env var changes the soft threshold" {
+  mkdir -p "$WHISPER_DIR/inbox/test-bob"
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  jq -n --arg ts "$NOW" \
+    '{id: "msg-hop-3", from: "test-alice", to: "test-bob", timestamp: $ts, content: "still delivered", priority: "normal", ttl: 3600, hop_count: 3}' \
     > "$WHISPER_DIR/inbox/test-bob/msg-hop-3.json"
 
   WHISPER_HOP_MAX=2 run bash "$HOOKS/check-inbox.sh"
   [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [[ "$output" == *"still delivered"* ]]
+  [[ "$output" == *"HOP=3"* ]]
 }
 
 @test "G3: includes PRIORITY instruction in output" {
@@ -245,4 +261,53 @@ _make_msg() {
 
   run bash "$HOOKS/check-inbox.sh"
   [[ "$output" == *"PRIORITY"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Fallback scan of run/processing/ (resilience when v1.0 leader is down)
+# ---------------------------------------------------------------------------
+
+@test "processing/ fallback: delivers stuck messages addressed to our peer" {
+  mkdir -p "$WHISPER_DIR/run/processing"
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  jq -n --arg ts "$NOW" \
+    '{id: "msg-stuck-1", from: "test-alice", to: "test-bob", timestamp: $ts, content: "rescued from processing", priority: "normal", ttl: 3600}' \
+    > "$WHISPER_DIR/run/processing/msg-stuck-1.json"
+
+  run bash "$HOOKS/check-inbox.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rescued from processing"* ]]
+  [ ! -f "$WHISPER_DIR/run/processing/msg-stuck-1.json" ]
+  [ -f "$WHISPER_DIR/archive/msg-stuck-1.json" ]
+}
+
+@test "processing/ fallback: ignores messages addressed to other peers" {
+  mkdir -p "$WHISPER_DIR/run/processing"
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  jq -n --arg ts "$NOW" \
+    '{id: "msg-other", from: "test-alice", to: "someone-else", timestamp: $ts, content: "not for us", priority: "normal", ttl: 3600}' \
+    > "$WHISPER_DIR/run/processing/msg-other.json"
+
+  run bash "$HOOKS/check-inbox.sh"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -f "$WHISPER_DIR/run/processing/msg-other.json" ]   # untouched
+}
+
+@test "processing/ fallback: combines with inbox/<peer>/ in same run" {
+  mkdir -p "$WHISPER_DIR/inbox/test-bob" "$WHISPER_DIR/run/processing"
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  jq -n --arg ts "$NOW" \
+    '{id: "msg-A", from: "alice", to: "test-bob", timestamp: $ts, content: "from inbox", priority: "normal", ttl: 3600}' \
+    > "$WHISPER_DIR/inbox/test-bob/msg-A.json"
+  jq -n --arg ts "$NOW" \
+    '{id: "msg-B", from: "bob", to: "test-bob", timestamp: $ts, content: "from processing", priority: "normal", ttl: 3600}' \
+    > "$WHISPER_DIR/run/processing/msg-B.json"
+
+  run bash "$HOOKS/check-inbox.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"from inbox"* ]]
+  [[ "$output" == *"from processing"* ]]
+  [ -f "$WHISPER_DIR/archive/msg-A.json" ]
+  [ -f "$WHISPER_DIR/archive/msg-B.json" ]
 }

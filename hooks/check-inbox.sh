@@ -28,11 +28,22 @@ PEER_ID=$(cat ".whisper-peer")
 echo "$PEER_ID" | grep -qE '^[a-zA-Z0-9-]+$' || exit 0
 
 INBOX="$WHISPER_DIR/inbox/$PEER_ID"
-[ ! -d "$INBOX" ] && exit 0
+PROCESSING="$WHISPER_DIR/run/processing"
 
-# Collect inbox files (null if none)
+# Collect candidate files: own inbox + any processing/ msg destined to us.
+# The processing/ scan is a robustness fallback: the v1.0 leader (extension
+# VS Code) stages messages there, and crashes/disconnects/disabled extensions
+# could otherwise leave them stuck forever (observed 2026-05-09/10, 41 stuck).
 shopt -s nullglob
-MSG_FILES=("$INBOX"/msg-*.json)
+MSG_FILES=()
+[ -d "$INBOX" ] && MSG_FILES+=("$INBOX"/msg-*.json)
+if [ -d "$PROCESSING" ]; then
+  for f in "$PROCESSING"/msg-*.json; do
+    [ -f "$f" ] || continue
+    TO=$(jq -r '.to // ""' "$f" 2>/dev/null || echo "")
+    [ "$TO" = "$PEER_ID" ] && MSG_FILES+=("$f")
+  done
+fi
 shopt -u nullglob
 TOTAL_MSGS=${#MSG_FILES[@]}
 [ "$TOTAL_MSGS" -eq 0 ] && exit 0
@@ -44,17 +55,27 @@ COUNT=0
 LAST_FROM=""
 PENDING=0
 
-HOP_MAX="${WHISPER_HOP_MAX:-5}"
+HOP_MAX="${WHISPER_HOP_MAX:-8}"
+HOP_HARD="${WHISPER_HOP_HARD:-20}"
 
 for i in "${!MSG_FILES[@]}"; do
   msg_file="${MSG_FILES[$i]}"
   [ ! -f "$msg_file" ] && continue
 
-  # G3: drop messages exceeding the hop budget (loop protection)
+  # G3: hop budget. Two thresholds — soft (HOP_MAX) renders the message with
+  # a visible warning so the recipient knows a thread is looping; hard
+  # (HOP_HARD) silently drops to actually break a runaway loop. The previous
+  # behavior was to silently drop at HOP_MAX, which lost messages without
+  # signal (asiai 2026-05-10 02:00 — msg-1778369832 with hop=6 archived
+  # without ever being shown to the recipient).
   HOP=$(jq -r '.hop_count // 0' "$msg_file" 2>/dev/null || echo 0)
-  if [ "$HOP" -gt "$HOP_MAX" ]; then
+  if [ "$HOP" -gt "$HOP_HARD" ]; then
     mv "$msg_file" "$WHISPER_DIR/archive/" 2>/dev/null || true
     continue
+  fi
+  HOP_WARN=""
+  if [ "$HOP" -gt "$HOP_MAX" ]; then
+    HOP_WARN=" ⚠ HOP=${HOP}/${HOP_MAX} (boucle suspectée)"
   fi
 
   FROM=$(jq -r '.from // "unknown"' "$msg_file" 2>/dev/null || echo "unknown")
@@ -71,14 +92,14 @@ for i in "${!MSG_FILES[@]}"; do
   # Build body: inline if small enough, reference otherwise
   if [ "$CONTENT_LEN" -lt "$INLINE_MAX" ]; then
     BODY="
-> **${FROM}** (${SHORT_TS})${THREAD_TAG}: ${CONTENT}"
+> **${FROM}** (${SHORT_TS})${THREAD_TAG}${HOP_WARN}: ${CONTENT}"
   else
     ARCHIVE_PATH="$WHISPER_DIR/archive/$(basename "$msg_file")"
     # Preview: strip newlines, keep first PREVIEW_LEN chars
     PREVIEW=$(printf '%s' "$CONTENT" | tr '\n' ' ' | tr -s ' ')
     PREVIEW="${PREVIEW:0:$PREVIEW_LEN}"
     BODY="
-> **${FROM}** (${SHORT_TS})${THREAD_TAG}: [📂 ${CONTENT_LEN} chars — Read ${ARCHIVE_PATH}]
+> **${FROM}** (${SHORT_TS})${THREAD_TAG}${HOP_WARN}: [📂 ${CONTENT_LEN} chars — Read ${ARCHIVE_PATH}]
 > Preview: ${PREVIEW}…"
   fi
 
