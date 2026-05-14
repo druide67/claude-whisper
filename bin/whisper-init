@@ -101,7 +101,7 @@ if [ "$WHISPER_DIR" != "$HOME/.claude-whisper" ]; then
 else
   mkdir -p "$BIN_DIR"
   SYMLINK_STATUS="linked"
-  for cmd in whisper-init whisper-send whisper-broadcast whisper-list whisper-clean; do
+  for cmd in whisper-init whisper-send whisper-broadcast whisper-list whisper-clean whisper-doctor; do
     ln -sf "$REPO_DIR/bin/$cmd" "$BIN_DIR/$cmd"
   done
 fi

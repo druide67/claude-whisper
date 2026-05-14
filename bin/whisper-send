@@ -3,15 +3,17 @@ set -euo pipefail
 
 WHISPER_DIR="${WHISPER_DIR:-$HOME/.claude-whisper}"
 
-usage() { echo "Usage: whisper-send [-t thread] [-f from] <peer-id> <message>" >&2; exit 1; }
+usage() { echo "Usage: whisper-send [-t thread] [-f from] [-r reply-to-msg-id] <peer-id> <message>" >&2; exit 1; }
 
 # Parse optional flags
 THREAD=""
 FROM_OVERRIDE=""
+REPLY_TO=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -t|--thread) THREAD="$2"; shift 2 ;;
     -f|--from) FROM_OVERRIDE="$2"; shift 2 ;;
+    -r|--reply-to) REPLY_TO="$2"; shift 2 ;;
     *) break ;;
   esac
 done
@@ -81,26 +83,31 @@ fi
 chmod 600 "$RECENT_SENDS.tmp"
 mv "$RECENT_SENDS.tmp" "$RECENT_SENDS"
 
-# ---- G3: hop_count for thread loop protection ----------------------------
+# ---- G3: hop_count via in_reply_to chain (not thread) --------------------
+# Rationale (bug PRISM-2 2026-05-13): the previous thread-wide MAX_HOP made
+# fan-in responses to a broadcast appear as a linear chain (hop 0..N) when
+# they are actually independent first-level replies. Now hop_count tracks
+# only the explicit reply chain via in_reply_to.
 HOP_COUNT=0
-if [ -n "$THREAD" ]; then
-  # Sentinel -1 means "thread never seen yet" — first message stays at hop 0
-  MAX_HOP=-1
+if [ -n "$REPLY_TO" ]; then
+  # Validate msg_id shape (defense in depth — REPLY_TO comes from CLI)
+  if [[ ! "$REPLY_TO" =~ ^msg-[0-9]+-[a-f0-9]+$ ]]; then
+    echo "Error: --reply-to expects a msg-<ts>-<hex> id (got: $REPLY_TO)" >&2; exit 1
+  fi
+  REF_FOUND=""
   for dir in "$WHISPER_DIR/archive" "$WHISPER_DIR/inbox/$TO" "$WHISPER_DIR/inbox/$FROM" "$WHISPER_DIR/run/processing"; do
     [ -d "$dir" ] || continue
-    shopt -s nullglob
-    for f in "$dir"/msg-*.json; do
-      [ -f "$f" ] || continue
-      MSG_THREAD=$(jq -r '.thread // ""' "$f" 2>/dev/null || echo "")
-      if [ "$MSG_THREAD" = "$THREAD" ]; then
-        H=$(jq -r '.hop_count // 0' "$f" 2>/dev/null || echo 0)
-        [ "$H" -gt "$MAX_HOP" ] && MAX_HOP=$H
-      fi
-    done
-    shopt -u nullglob
+    candidate="$dir/${REPLY_TO}.json"
+    if [ -f "$candidate" ]; then
+      REF_FOUND="$candidate"
+      break
+    fi
   done
-  if [ "$MAX_HOP" -ge 0 ]; then
-    HOP_COUNT=$((MAX_HOP + 1))
+  if [ -n "$REF_FOUND" ]; then
+    REF_HOP=$(jq -r '.hop_count // 0' "$REF_FOUND" 2>/dev/null || echo 0)
+    HOP_COUNT=$((REF_HOP + 1))
+  else
+    echo "⚠️  whisper-send: --reply-to ${REPLY_TO} not found in archive/inbox/processing — sending as hop=0" >&2
   fi
 fi
 
@@ -121,8 +128,11 @@ jq -n \
   --arg ts "$NOW" \
   --arg content "$CONTENT" \
   --arg thread "$THREAD" \
+  --arg reply_to "$REPLY_TO" \
   --argjson hop "$HOP_COUNT" \
-  '{id: $id, from: $from, to: $to, timestamp: $ts, content: $content, priority: "normal", ttl: 3600, hop_count: $hop} | if $thread != "" then .thread = $thread else . end' \
+  '{id: $id, from: $from, to: $to, timestamp: $ts, content: $content, priority: "normal", ttl: 3600, hop_count: $hop}
+   | if $thread != "" then .thread = $thread else . end
+   | if $reply_to != "" then .in_reply_to = $reply_to else . end' \
   > "${MSG_FILE}.tmp"
 
 chmod 600 "${MSG_FILE}.tmp"

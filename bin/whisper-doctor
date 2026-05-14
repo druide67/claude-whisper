@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+# whisper-doctor — audit + optional auto-fix for claude-whisper state.
+#
+# Audit-only:  whisper-doctor
+# Auto-fix:    whisper-doctor --fix          (interactive confirmation each step)
+# Scripted:    whisper-doctor --fix --yes    (no prompts, idempotent)
+#
+# Exits 0 if everything is clean OR all fixes applied, non-zero if critical
+# checks failed and were not fixed.
+
+set -euo pipefail
+
+WHISPER_DIR="${WHISPER_DIR:-$HOME/.claude-whisper}"
+PEERS_FILE="$WHISPER_DIR/peers.json"
+WARN_DIR="$WHISPER_DIR/state/warnings"
+STALE_DAYS="${WHISPER_STALE_DAYS:-7}"
+
+FIX=0
+YES=0
+for arg in "$@"; do
+  case "$arg" in
+    --fix) FIX=1 ;;
+    --yes|-y) YES=1 ;;
+    -h|--help)
+      cat <<EOF
+Usage: whisper-doctor [--fix] [--yes]
+
+Audits the local claude-whisper state and reports problems. With --fix,
+proposes corrections interactively. With --fix --yes, applies all auto-fixes
+without prompting (idempotent — safe to run from scripts).
+
+Checks:
+  1. .whisper-peer present at each registered peer cwd                       [critical, fixable]
+  2. ~/.claude-whisper/ perms = 700                                          [warning, fixable]
+  3. inbox/<peer>/ perms = 700                                               [warning, fixable]
+  4. Message file perms = 600                                                [warning, fixable]
+  5. Stuck files in run/processing/ (mtime > 1h)                             [warning, informational]
+  6. Hook present in ~/.claude/settings.json                                 [critical, fixable]
+  7. Symlinks in ~/.local/bin/ valid                                         [warning, fixable]
+  8. state/warnings/ contents (fail-loud sentinels from check-inbox.sh)      [warning, informational]
+  9. peers.json last_seen stale > ${STALE_DAYS}d                             [info, informational]
+EOF
+      exit 0
+      ;;
+  esac
+done
+
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+
+OK_COUNT=0
+WARN_COUNT=0
+CRIT_COUNT=0
+FIXED_COUNT=0
+
+emit_ok()   { OK_COUNT=$((OK_COUNT+1));     echo "  ✅ $*"; }
+emit_warn() { WARN_COUNT=$((WARN_COUNT+1)); echo "  ⚠️  $*"; }
+emit_crit() { CRIT_COUNT=$((CRIT_COUNT+1)); echo "  ❌ $*"; }
+emit_info() { echo "     $*"; }
+
+confirm() {
+  # confirm <prompt> → 0 if yes
+  [ "$YES" -eq 1 ] && return 0
+  local prompt="$1"
+  printf "       %s [y/N] " "$prompt" >&2
+  read -r answer
+  case "$answer" in y|Y|yes) return 0 ;; *) return 1 ;; esac
+}
+
+apply_fix() {
+  # apply_fix <description> <command...>
+  local desc="$1"; shift
+  if [ "$FIX" -eq 1 ] && confirm "Fix: $desc?"; then
+    if "$@" 2>/dev/null; then
+      FIXED_COUNT=$((FIXED_COUNT+1))
+      emit_info "→ fixed"
+      return 0
+    else
+      emit_info "→ fix failed"
+      return 1
+    fi
+  fi
+  return 1
+}
+
+now_epoch() { date +%s; }
+parse_iso_epoch() {
+  date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$1" "+%s" 2>/dev/null || \
+    date -u -d "$1" "+%s" 2>/dev/null || echo ""
+}
+
+# ----------------------------------------------------------------------------
+# Check 1 — .whisper-peer per registered peer
+# ----------------------------------------------------------------------------
+
+echo "── whisper-doctor — $(date -u +%Y-%m-%dT%H:%M:%SZ) ──"
+echo
+echo "[1] .whisper-peer files (per registered peer)"
+
+if [ ! -f "$PEERS_FILE" ]; then
+  emit_crit "No peers.json found at $PEERS_FILE — run whisper-init first."
+else
+  while IFS=$'\t' read -r id cwd; do
+    [ -z "$id" ] && continue
+    if [ "$cwd" = "-" ] || [ -z "$cwd" ]; then
+      emit_warn "$id : no cwd recorded in peers.json"
+      continue
+    fi
+    if [ ! -d "$cwd" ]; then
+      emit_warn "$id : cwd $cwd no longer exists"
+      continue
+    fi
+    if [ -f "$cwd/.whisper-peer" ]; then
+      content=$(cat "$cwd/.whisper-peer" 2>/dev/null || echo "")
+      if [ "$content" = "$id" ]; then
+        emit_ok "$id : .whisper-peer present at $cwd"
+      else
+        emit_crit "$id : .whisper-peer content mismatch (got: '$content')"
+        if apply_fix "rewrite $cwd/.whisper-peer with '$id'" \
+             bash -c "echo '$id' > '$cwd/.whisper-peer' && chmod 600 '$cwd/.whisper-peer'"; then :; fi
+      fi
+    else
+      emit_crit "$id : .whisper-peer MISSING at $cwd"
+      if apply_fix "create $cwd/.whisper-peer with '$id'" \
+           bash -c "echo '$id' > '$cwd/.whisper-peer' && chmod 600 '$cwd/.whisper-peer'"; then :; fi
+    fi
+  done < <(jq -r '.peers | to_entries[] | "\(.key)\t\(.value.cwd // "-")"' "$PEERS_FILE")
+fi
+
+# ----------------------------------------------------------------------------
+# Check 2 — whisper dir perms
+# ----------------------------------------------------------------------------
+
+echo
+echo "[2] ~/.claude-whisper/ perms"
+if [ -d "$WHISPER_DIR" ]; then
+  perms=$(stat -f "%Lp" "$WHISPER_DIR" 2>/dev/null || stat -c "%a" "$WHISPER_DIR" 2>/dev/null)
+  if [ "$perms" = "700" ]; then
+    emit_ok "$WHISPER_DIR perms = 700"
+  else
+    emit_warn "$WHISPER_DIR perms = $perms (expected 700)"
+    if apply_fix "chmod 700 $WHISPER_DIR" chmod 700 "$WHISPER_DIR"; then :; fi
+  fi
+else
+  emit_crit "$WHISPER_DIR not found"
+fi
+
+# ----------------------------------------------------------------------------
+# Check 3 — inbox/<peer>/ perms = 700
+# ----------------------------------------------------------------------------
+
+echo
+echo "[3] inbox/<peer>/ perms (700 expected)"
+if [ -d "$WHISPER_DIR/inbox" ]; then
+  shopt -s nullglob
+  for peer_dir in "$WHISPER_DIR/inbox"/*/; do
+    peer_name=$(basename "$peer_dir")
+    perms=$(stat -f "%Lp" "$peer_dir" 2>/dev/null || stat -c "%a" "$peer_dir" 2>/dev/null)
+    if [ "$perms" = "700" ]; then
+      emit_ok "inbox/$peer_name perms = 700"
+    else
+      emit_warn "inbox/$peer_name perms = $perms (expected 700)"
+      if apply_fix "chmod 700 inbox/$peer_name" chmod 700 "$peer_dir"; then :; fi
+    fi
+  done
+  shopt -u nullglob
+else
+  emit_warn "inbox/ directory missing"
+fi
+
+# ----------------------------------------------------------------------------
+# Check 4 — message file perms = 600
+# ----------------------------------------------------------------------------
+
+echo
+echo "[4] message file perms (600 expected)"
+BAD_PERM_FILES=0
+shopt -s nullglob
+for dir in "$WHISPER_DIR/inbox"/*/  "$WHISPER_DIR/archive"/  "$WHISPER_DIR/run/processing"/; do
+  [ -d "$dir" ] || continue
+  for f in "$dir"/msg-*.json; do
+    [ -f "$f" ] || continue
+    perms=$(stat -f "%Lp" "$f" 2>/dev/null || stat -c "%a" "$f" 2>/dev/null)
+    if [ "$perms" != "600" ]; then
+      BAD_PERM_FILES=$((BAD_PERM_FILES+1))
+      emit_warn "$f perms = $perms"
+      if apply_fix "chmod 600 $(basename "$f")" chmod 600 "$f"; then :; fi
+    fi
+  done
+done
+shopt -u nullglob
+if [ "$BAD_PERM_FILES" -eq 0 ]; then
+  emit_ok "all message files at 600"
+fi
+
+# ----------------------------------------------------------------------------
+# Check 5 — stuck in run/processing/
+# ----------------------------------------------------------------------------
+
+echo
+echo "[5] run/processing/ stuck messages (mtime > 1h)"
+if [ -d "$WHISPER_DIR/run/processing" ]; then
+  STUCK=$(find "$WHISPER_DIR/run/processing" -name 'msg-*.json' -type f -mmin +60 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$STUCK" -eq 0 ]; then
+    emit_ok "no stuck messages"
+  else
+    emit_warn "$STUCK message(s) stuck > 1h in run/processing/ — operator review recommended"
+    emit_info "(whisper-doctor does NOT auto-archive — manual decision)"
+  fi
+else
+  emit_ok "run/processing/ not present (no leader staging)"
+fi
+
+# ----------------------------------------------------------------------------
+# Check 6 — hook in ~/.claude/settings.json
+# ----------------------------------------------------------------------------
+
+echo
+echo "[6] hook registration in ~/.claude/settings.json"
+SETTINGS="$HOME/.claude/settings.json"
+HOOK_CMD="bash $WHISPER_DIR/hooks/check-inbox.sh"
+
+if [ "$WHISPER_DIR" != "$HOME/.claude-whisper" ]; then
+  emit_ok "skipped (custom WHISPER_DIR)"
+elif [ ! -f "$SETTINGS" ]; then
+  emit_warn "$SETTINGS not found"
+elif jq -e --arg cmd "$HOOK_CMD" '.hooks.UserPromptSubmit[]?.hooks[]? | select(.command == $cmd)' "$SETTINGS" > /dev/null 2>&1; then
+  emit_ok "hook installed"
+else
+  emit_crit "hook missing in $SETTINGS"
+  if apply_fix "inject UserPromptSubmit hook into $SETTINGS" bash -c "
+    jq --arg cmd '$HOOK_CMD' '
+      .hooks //= {} |
+      .hooks.UserPromptSubmit //= [] |
+      .hooks.UserPromptSubmit += [{\"matcher\": \"\", \"hooks\": [{\"type\": \"command\", \"command\": \$cmd}]}]
+    ' '$SETTINGS' > '$SETTINGS.tmp' && mv '$SETTINGS.tmp' '$SETTINGS'
+  "; then :; fi
+fi
+
+# ----------------------------------------------------------------------------
+# Check 7 — symlinks in ~/.local/bin/
+# ----------------------------------------------------------------------------
+
+echo
+echo "[7] symlinks in ~/.local/bin/"
+BIN_DIR="$HOME/.local/bin"
+# Locate repo (resolve symlinks)
+SCRIPT="$0"
+while [ -L "$SCRIPT" ]; do
+  DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+  SCRIPT=$(readlink "$SCRIPT")
+  [[ "$SCRIPT" != /* ]] && SCRIPT="$DIR/$SCRIPT"
+done
+REPO_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+
+if [ "$WHISPER_DIR" != "$HOME/.claude-whisper" ]; then
+  emit_ok "skipped (custom WHISPER_DIR)"
+elif [ ! -d "$BIN_DIR" ]; then
+  emit_warn "$BIN_DIR does not exist"
+  apply_fix "mkdir -p $BIN_DIR" mkdir -p "$BIN_DIR" || true
+else
+  for cmd in whisper-init whisper-send whisper-broadcast whisper-list whisper-clean whisper-doctor; do
+    target="$BIN_DIR/$cmd"
+    expected="$REPO_DIR/bin/$cmd"
+    if [ ! -f "$expected" ]; then
+      continue   # nothing to link (e.g. brand-new command not yet in repo)
+    fi
+    if [ -L "$target" ] && [ "$(readlink "$target")" = "$expected" ]; then
+      emit_ok "$cmd → $expected"
+    else
+      emit_warn "$cmd : missing or broken symlink"
+      if apply_fix "ln -sf $expected $target" ln -sf "$expected" "$target"; then :; fi
+    fi
+  done
+fi
+
+# ----------------------------------------------------------------------------
+# Check 8 — state/warnings/ sentinels
+# ----------------------------------------------------------------------------
+
+echo
+echo "[8] state/warnings/ sentinels (informational)"
+shopt -s nullglob
+WARN_FILES=("$WARN_DIR"/*.warn)
+shopt -u nullglob
+if [ ${#WARN_FILES[@]} -eq 0 ]; then
+  emit_ok "no sentinel warnings"
+else
+  emit_warn "${#WARN_FILES[@]} sentinel(s) present:"
+  for w in "${WARN_FILES[@]}"; do
+    emit_info "$(basename "$w")"
+    # Show kind + first relevant context field
+    kind=$(jq -r '.kind // ""' "$w" 2>/dev/null || echo "")
+    cwd=$(jq -r '.cwd // ""' "$w" 2>/dev/null || echo "")
+    [ -n "$cwd" ] && emit_info "  cwd: $cwd"
+    [ "$kind" = "hop-overflow" ] && emit_info "  msg dropped to anti-runaway. Review then \`rm\` to dismiss."
+    [ "$kind" = "missing-peer" ] && emit_info "  hook ran in cwd without .whisper-peer. Restore the file or remove stranded inbox."
+    [ "$kind" = "invalid-peer" ] && emit_info "  .whisper-peer content invalid. Fix manually."
+  done
+fi
+
+# ----------------------------------------------------------------------------
+# Check 9 — peers.json last_seen freshness (informational)
+# ----------------------------------------------------------------------------
+
+echo
+echo "[9] peers.json last_seen (stale > ${STALE_DAYS}d)"
+if [ -f "$PEERS_FILE" ]; then
+  NOW=$(now_epoch)
+  CUTOFF=$((NOW - STALE_DAYS * 86400))
+  STALE_FOUND=0
+  while IFS=$'\t' read -r id last_seen cwd; do
+    [ -z "$id" ] && continue
+    [ -z "$cwd" ] || [ "$cwd" = "-" ] && continue   # skip peers without cwd
+    [ ! -d "$cwd" ] && continue                       # skip peers whose cwd is gone
+    [ "$last_seen" = "-" ] || [ -z "$last_seen" ] && continue
+    LS_EPOCH=$(parse_iso_epoch "$last_seen")
+    [ -z "$LS_EPOCH" ] && continue
+    if [ "$LS_EPOCH" -lt "$CUTOFF" ]; then
+      STALE_FOUND=$((STALE_FOUND+1))
+      DAYS=$(( (NOW - LS_EPOCH) / 86400 ))
+      emit_warn "$id : last_seen=${last_seen} (${DAYS}d ago)"
+    fi
+  done < <(jq -r '.peers | to_entries[] | "\(.key)\t\(.value.last_seen // "-")\t\(.value.cwd // "-")"' "$PEERS_FILE")
+  if [ "$STALE_FOUND" -eq 0 ]; then
+    emit_ok "all active peers fresh"
+  fi
+fi
+
+# ----------------------------------------------------------------------------
+# Summary
+# ----------------------------------------------------------------------------
+
+echo
+echo "── summary ──"
+echo "  ✅ ok       : $OK_COUNT"
+echo "  ⚠️  warnings : $WARN_COUNT"
+echo "  ❌ critical : $CRIT_COUNT"
+[ "$FIX" -eq 1 ] && echo "  🔧 fixed    : $FIXED_COUNT"
+
+# Exit non-zero only if critical issues remain unfixed
+if [ "$CRIT_COUNT" -gt 0 ] && [ "$FIXED_COUNT" -lt "$CRIT_COUNT" ]; then
+  exit 1
+fi
+exit 0

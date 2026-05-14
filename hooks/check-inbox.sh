@@ -20,12 +20,73 @@ INLINE_MAX="${WHISPER_INLINE_MAX:-3000}"
 OUTPUT_MAX="${WHISPER_OUTPUT_MAX:-8000}"
 PREVIEW_LEN=300
 
+# Sentinel writers: surface conditions that would otherwise exit 0 silently
+# (bug PRISM-1 2026-05-13: .whisper-peer missing on PRISM for 12 days
+# with zero alerts — 7 whispers stale). Each sentinel is keyed by sha-cwd
+# so a looping hook doesn't flood the warnings dir. whisper-list / whisper-doctor
+# read these files to surface the issue to the operator.
+WARN_DIR="$WHISPER_DIR/state/warnings"
+SHA_CWD=$(printf '%s' "$PWD" | shasum -a 256 2>/dev/null | cut -c1-12)
+
+_write_warn() {
+  # _write_warn <filename-without-dir> <kind> <json-payload-fragment>
+  local fname="$1"; local kind="$2"; local payload="$3"
+  mkdir -p "$WARN_DIR" 2>/dev/null || return 0
+  local f="$WARN_DIR/${fname}"
+  local now
+  now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  printf '{"ts":"%s","cwd":"%s","kind":"%s",%s}\n' \
+    "$now" "$PWD" "$kind" "$payload" > "$f.tmp" 2>/dev/null && \
+    chmod 600 "$f.tmp" 2>/dev/null && \
+    mv "$f.tmp" "$f" 2>/dev/null || rm -f "$f.tmp" 2>/dev/null
+}
+
+# CWD-scoped warnings (cleared automatically when the hook runs cleanly from
+# the same CWD): missing-peer, invalid-peer.
+write_warn() {
+  local kind="$1"; local payload="$2"
+  _write_warn "${kind}-${SHA_CWD}.warn" "$kind" "$payload"
+}
+
+clear_warn() {
+  local kind="$1"
+  rm -f "$WARN_DIR/${kind}-${SHA_CWD}.warn" 2>/dev/null || true
+}
+
+# Message-scoped warnings (persist until reviewed by operator via
+# whisper-doctor): hop-overflow drops.
+write_msg_warn() {
+  local kind="$1"; local msg_basename="$2"; local payload="$3"
+  _write_warn "${kind}-${msg_basename}.warn" "$kind" "$payload"
+}
+
 # Read peer-id from project directory
-[ ! -f ".whisper-peer" ] && exit 0
+if [ ! -f ".whisper-peer" ]; then
+  # Heuristic: suggest peer-id if basename(CWD) appears as a directory in inbox/
+  SUGGESTED=""
+  BASENAME_CWD=$(basename "$PWD")
+  if [ -d "$WHISPER_DIR/inbox/$BASENAME_CWD" ]; then
+    PENDING=$(find "$WHISPER_DIR/inbox/$BASENAME_CWD" -name 'msg-*.json' 2>/dev/null | head -1)
+    [ -n "$PENDING" ] && SUGGESTED="$BASENAME_CWD"
+  fi
+  if [ -n "$SUGGESTED" ]; then
+    write_warn "missing-peer" "\"suggested_peer\":\"$SUGGESTED\""
+  fi
+  exit 0
+fi
 PEER_ID=$(cat ".whisper-peer")
 
 # Validate peer-id (prevent path traversal)
-echo "$PEER_ID" | grep -qE '^[a-zA-Z0-9-]+$' || exit 0
+if ! echo "$PEER_ID" | grep -qE '^[a-zA-Z0-9-]+$'; then
+  RAW_ESCAPED=$(printf '%s' "$PEER_ID" | head -c 80 | tr -d '"\\')
+  write_warn "invalid-peer" "\"raw_content\":\"$RAW_ESCAPED\""
+  exit 0
+fi
+
+# Reaching here = we have a valid .whisper-peer + peer-id, so any prior
+# missing/invalid sentinel from this CWD is stale → clean up.
+clear_warn "missing-peer"
+clear_warn "invalid-peer"
 
 INBOX="$WHISPER_DIR/inbox/$PEER_ID"
 PROCESSING="$WHISPER_DIR/run/processing"
@@ -70,6 +131,14 @@ for i in "${!MSG_FILES[@]}"; do
   # without ever being shown to the recipient).
   HOP=$(jq -r '.hop_count // 0' "$msg_file" 2>/dev/null || echo 0)
   if [ "$HOP" -gt "$HOP_HARD" ]; then
+    # Hard drop is intentional (anti-runaway loop) but must NOT be invisible.
+    # Surface as a warning so the operator can review what was dropped.
+    MSG_ID_DROPPED=$(jq -r '.id // ""' "$msg_file" 2>/dev/null || echo "unknown")
+    MSG_FROM_DROPPED=$(jq -r '.from // ""' "$msg_file" 2>/dev/null || echo "unknown")
+    MSG_THREAD_DROPPED=$(jq -r '.thread // ""' "$msg_file" 2>/dev/null || echo "")
+    ARCH_DROPPED="$WHISPER_DIR/archive/$(basename "$msg_file")"
+    write_msg_warn "hop-overflow" "$(basename "$msg_file" .json)" \
+      "\"msg_id\":\"$MSG_ID_DROPPED\",\"from\":\"$MSG_FROM_DROPPED\",\"thread\":\"$MSG_THREAD_DROPPED\",\"hop\":$HOP,\"archive\":\"$ARCH_DROPPED\""
     mv "$msg_file" "$WHISPER_DIR/archive/" 2>/dev/null || true
     continue
   fi
@@ -129,6 +198,19 @@ if [ -n "$LAST_FROM" ]; then
   mkdir -p "$WHISPER_DIR/state" 2>/dev/null || true
   echo "$LAST_FROM" > "$WHISPER_DIR/state/last-sender-$PEER_ID" 2>/dev/null || true
   chmod 600 "$WHISPER_DIR/state/last-sender-$PEER_ID" 2>/dev/null || true
+fi
+
+# Heartbeat: update peers.json[PEER_ID].last_seen so whisper-list / whisper-doctor
+# can detect peers whose hook hasn't run in a while. Best-effort, atomic write.
+PEERS_FILE="$WHISPER_DIR/peers.json"
+if [ -f "$PEERS_FILE" ]; then
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  jq --arg id "$PEER_ID" --arg ts "$NOW" \
+    '.peers[$id].last_seen = $ts' \
+    "$PEERS_FILE" > "$PEERS_FILE.tmp" 2>/dev/null && \
+    chmod 600 "$PEERS_FILE.tmp" 2>/dev/null && \
+    mv "$PEERS_FILE.tmp" "$PEERS_FILE" 2>/dev/null || \
+    rm -f "$PEERS_FILE.tmp" 2>/dev/null
 fi
 
 # Header: show displayed vs pending when overflow

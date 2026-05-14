@@ -294,6 +294,102 @@ _make_msg() {
   [ -f "$WHISPER_DIR/run/processing/msg-other.json" ]   # untouched
 }
 
+# ---------------------------------------------------------------------------
+# R2 — Observability sentinels (fail-loud) + R3 last_seen heartbeat
+# ---------------------------------------------------------------------------
+
+@test "R2: missing .whisper-peer writes a sentinel when inbox has pending msgs" {
+  # Plant a message in a peer-dir matching the basename of CWD
+  PEER_NAME=$(basename "$PROJECT_DIR")
+  mkdir -p "$WHISPER_DIR/inbox/$PEER_NAME"
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  jq -n --arg ts "$NOW" --arg to "$PEER_NAME" \
+    '{id: "msg-stranded", from: "x", to: $to, timestamp: $ts, content: "x", priority: "normal", ttl: 3600}' \
+    > "$WHISPER_DIR/inbox/$PEER_NAME/msg-stranded.json"
+  # Remove the .whisper-peer file
+  rm -f "$PROJECT_DIR/.whisper-peer"
+
+  run bash "$HOOKS/check-inbox.sh"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]                                                    # still silent stdout
+  shopt -s nullglob
+  warns=("$WHISPER_DIR/state/warnings"/missing-peer-*.warn)
+  [ ${#warns[@]} -ge 1 ]                                              # sentinel created
+  [[ "$(cat "${warns[0]}")" == *"$PEER_NAME"* ]]                      # mentions suggested peer
+}
+
+@test "R2: missing .whisper-peer with no candidate inbox writes no sentinel" {
+  # Empty inbox dir → no plausible suggestion → no warning to avoid noise
+  rm -f "$PROJECT_DIR/.whisper-peer"
+
+  run bash "$HOOKS/check-inbox.sh"
+  [ "$status" -eq 0 ]
+  shopt -s nullglob
+  warns=("$WHISPER_DIR/state/warnings"/missing-peer-*.warn)
+  [ ${#warns[@]} -eq 0 ]
+}
+
+@test "R2: invalid peer-id content writes an invalid-peer sentinel" {
+  echo "bad peer!" > "$PROJECT_DIR/.whisper-peer"
+
+  run bash "$HOOKS/check-inbox.sh"
+  [ "$status" -eq 0 ]
+  shopt -s nullglob
+  warns=("$WHISPER_DIR/state/warnings"/invalid-peer-*.warn)
+  [ ${#warns[@]} -ge 1 ]
+}
+
+@test "R2: successful run clears prior missing-peer sentinel for the same CWD" {
+  # First run without .whisper-peer + plausible inbox → write sentinel
+  PEER_NAME=$(basename "$PROJECT_DIR")
+  mkdir -p "$WHISPER_DIR/inbox/$PEER_NAME"
+  jq -n '{id: "x", from: "y", to: "z", timestamp: "x", content: "x", priority: "normal", ttl: 3600}' \
+    > "$WHISPER_DIR/inbox/$PEER_NAME/msg-tmp.json"
+  rm -f "$PROJECT_DIR/.whisper-peer"
+  bash "$HOOKS/check-inbox.sh" > /dev/null
+  shopt -s nullglob
+  warns=("$WHISPER_DIR/state/warnings"/missing-peer-*.warn)
+  [ ${#warns[@]} -ge 1 ]
+
+  # Second run with .whisper-peer restored → sentinel cleared
+  echo "test-bob" > "$PROJECT_DIR/.whisper-peer"
+  rm -f "$WHISPER_DIR/inbox/$PEER_NAME/msg-tmp.json"
+  bash "$HOOKS/check-inbox.sh" > /dev/null
+  warns=("$WHISPER_DIR/state/warnings"/missing-peer-*.warn)
+  [ ${#warns[@]} -eq 0 ]
+}
+
+@test "R2: hop-overflow drop writes a per-message sentinel" {
+  mkdir -p "$WHISPER_DIR/inbox/test-bob"
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  jq -n --arg ts "$NOW" \
+    '{id: "msg-hop-50", from: "test-alice", to: "test-bob", timestamp: $ts, content: "runaway", priority: "normal", ttl: 3600, hop_count: 50, thread: "loopy"}' \
+    > "$WHISPER_DIR/inbox/test-bob/msg-hop-50.json"
+
+  bash "$HOOKS/check-inbox.sh" > /dev/null
+  shopt -s nullglob
+  warns=("$WHISPER_DIR/state/warnings"/hop-overflow-msg-hop-50.warn)
+  [ ${#warns[@]} -eq 1 ]
+  [[ "$(cat "${warns[0]}")" == *"msg-hop-50"* ]]
+}
+
+@test "R3: hook updates peers.json[PEER_ID].last_seen on successful run" {
+  mkdir -p "$WHISPER_DIR/inbox/test-bob"
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  jq -n --arg ts "$NOW" \
+    '{id: "msg-hb", from: "alice", to: "test-bob", timestamp: $ts, content: "heartbeat", priority: "normal", ttl: 3600}' \
+    > "$WHISPER_DIR/inbox/test-bob/msg-hb.json"
+  # Sentinel: nuke the existing last_seen so we can detect the update
+  jq '.peers."test-bob".last_seen = "2026-01-01T00:00:00Z"' \
+    "$WHISPER_DIR/peers.json" > "$WHISPER_DIR/peers.json.tmp" && mv "$WHISPER_DIR/peers.json.tmp" "$WHISPER_DIR/peers.json"
+
+  bash "$HOOKS/check-inbox.sh" > /dev/null
+  LAST=$(jq -r '.peers."test-bob".last_seen' "$WHISPER_DIR/peers.json")
+  # Should be a 2026 date, not the 2026-01-01 sentinel
+  [[ "$LAST" =~ ^2026-[0-9]{2}-[0-9]{2}T ]]
+  [ "$LAST" != "2026-01-01T00:00:00Z" ]
+}
+
 @test "processing/ fallback: combines with inbox/<peer>/ in same run" {
   mkdir -p "$WHISPER_DIR/inbox/test-bob" "$WHISPER_DIR/run/processing"
   NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")

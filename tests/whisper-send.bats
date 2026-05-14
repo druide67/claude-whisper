@@ -131,39 +131,91 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# G3 — hop_count
+# G3 — hop_count via in_reply_to chain (bug PRISM-2 fix, 2026-05-13)
 # ---------------------------------------------------------------------------
 
-@test "G3: first message of a thread has hop_count=0" {
-  bash "$BIN/whisper-send" -t loop-test test-bob "hop 0"
-  shopt -s nullglob
-  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
-  [ "$(jq -r '.hop_count' "${files[0]}")" = "0" ]
-}
-
-@test "G3: message without thread has hop_count=0" {
+@test "G3: message without thread or reply-to has hop_count=0" {
   bash "$BIN/whisper-send" test-bob "no thread"
   shopt -s nullglob
   files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
   [ "$(jq -r '.hop_count' "${files[0]}")" = "0" ]
 }
 
-@test "G3: hop_count increments when thread already exists in inbox" {
-  bash "$BIN/whisper-send" -t chain test-bob "hop 0"
-  bash "$BIN/whisper-send" -t chain test-bob "hop 1"
+@test "G3: first message of a thread (no reply-to) has hop_count=0" {
+  bash "$BIN/whisper-send" -t mythread test-bob "first"
   shopt -s nullglob
-  hops=()
-  for f in "$WHISPER_DIR/inbox/test-bob"/msg-*.json; do
-    hops+=($(jq -r '.hop_count' "$f"))
-  done
-  # Sort hops to make assertion deterministic regardless of filename order
-  IFS=$'\n' sorted=($(sort <<< "${hops[*]}")); unset IFS
-  [ "${sorted[0]}" = "0" ]
-  [ "${sorted[1]}" = "1" ]
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  [ "$(jq -r '.hop_count' "${files[0]}")" = "0" ]
 }
 
-@test "G3: output mentions hop=N for threaded messages" {
-  bash "$BIN/whisper-send" -t mythread test-bob "first"
-  run bash "$BIN/whisper-send" -t mythread test-bob "second"
-  [[ "$output" == *"hop=1"* ]]
+@test "G3: same thread without reply-to keeps hop=0 (regression PRISM-2 fan-in)" {
+  # Simulate 8 independent replies to the same broadcast — none should
+  # accumulate hop_count just because they share a thread.
+  bash "$BIN/whisper-send" -t broadcast test-bob "reply 1"
+  bash "$BIN/whisper-send" -t broadcast test-bob "reply 2"
+  bash "$BIN/whisper-send" -t broadcast test-bob "reply 3"
+  shopt -s nullglob
+  for f in "$WHISPER_DIR/inbox/test-bob"/msg-*.json; do
+    [ "$(jq -r '.hop_count' "$f")" = "0" ]
+  done
+}
+
+@test "G3: --reply-to to a known msg increments hop_count by 1" {
+  # Plant a reference message in archive with hop_count=3
+  mkdir -p "$WHISPER_DIR/archive"
+  REF_ID="msg-1000000000-abcdef01"
+  cat > "$WHISPER_DIR/archive/${REF_ID}.json" <<EOF
+{"id":"$REF_ID","from":"test-bob","to":"test-alice","content":"prev","hop_count":3,"timestamp":"2026-05-14T00:00:00Z","priority":"normal","ttl":3600}
+EOF
+  bash "$BIN/whisper-send" -r "$REF_ID" test-bob "reply"
+  shopt -s nullglob
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  [ "$(jq -r '.hop_count' "${files[0]}")" = "4" ]
+  [ "$(jq -r '.in_reply_to' "${files[0]}")" = "$REF_ID" ]
+}
+
+@test "G3: --reply-to to unknown msg-id sends hop=0 with stderr warning" {
+  run bash "$BIN/whisper-send" -r "msg-1000000000-deadbeef" test-bob "reply"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found"* ]] || [[ "$stderr" == *"not found"* ]]
+  shopt -s nullglob
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  [ "$(jq -r '.hop_count' "${files[0]}")" = "0" ]
+}
+
+@test "G3: --reply-to with malformed msg-id is rejected" {
+  run bash "$BIN/whisper-send" -r "not-a-valid-id" test-bob "reply"
+  [ "$status" -ne 0 ]
+  shopt -s nullglob
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  [ ${#files[@]} -eq 0 ]
+}
+
+@test "G3: explicit reply chain (A→B→A→B) produces hop 0,1,2,3" {
+  mkdir -p "$WHISPER_DIR/archive"
+  # Msg 1: hop=0 (no reply-to)
+  bash "$BIN/whisper-send" test-bob "msg1"
+  shopt -s nullglob
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  M1_ID=$(jq -r '.id' "${files[0]}")
+  # Move to archive (simulate it's been seen) for cleaner test
+  mv "${files[0]}" "$WHISPER_DIR/archive/"
+  # Msg 2: reply to msg 1 → hop=1
+  bash "$BIN/whisper-send" -r "$M1_ID" test-bob "msg2"
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  M2_ID=$(jq -r '.id' "${files[0]}")
+  [ "$(jq -r '.hop_count' "${files[0]}")" = "1" ]
+  mv "${files[0]}" "$WHISPER_DIR/archive/"
+  # Msg 3: reply to msg 2 → hop=2
+  bash "$BIN/whisper-send" -r "$M2_ID" test-bob "msg3"
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  [ "$(jq -r '.hop_count' "${files[0]}")" = "2" ]
+}
+
+@test "G3: in_reply_to field absent when -r not provided" {
+  bash "$BIN/whisper-send" test-bob "no reply"
+  shopt -s nullglob
+  files=("$WHISPER_DIR/inbox/test-bob"/msg-*.json)
+  # jq -r '.in_reply_to' on absent field returns "null" string
+  [ "$(jq -r '.in_reply_to // empty' "${files[0]}")" = "" ]
 }
