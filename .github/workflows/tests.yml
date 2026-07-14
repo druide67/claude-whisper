@@ -8,12 +8,19 @@ on:
 
 jobs:
   test:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: brew install bats-core jq
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
-      - name: Run tests
-        run: bats tests/
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -count=1

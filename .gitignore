@@ -3,3 +3,6 @@ node_modules/
 *.log
 .env
 .whisper-peer
+
+# Go build
+/whisper
