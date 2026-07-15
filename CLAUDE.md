@@ -112,7 +112,7 @@ The on-disk layout is a public interface — external tools (menu-bar apps, edit
 
 ### Hook output
 
-Plain text on stdout (exit code 0). Do NOT use JSON `hookSpecificOutput` — it causes "UserPromptSubmit hook error" in practice despite being documented.
+Plain text on stdout (exit code 0). This is the documented injection path for `UserPromptSubmit`/`SessionStart`; JSON `hookSpecificOutput` also works nowadays but brings nothing for pure context injection — stick to plain stdout.
 
 ## Conventions
 - Atomic writes everywhere: unique tmp file + `rename` (see `store.AtomicWrite`)
@@ -124,8 +124,8 @@ Plain text on stdout (exit code 0). Do NOT use JSON `hookSpecificOutput` — it 
 - Tunables are env vars with safe defaults (`WHISPER_DIR`, `WHISPER_DUP_WINDOW`, `WHISPER_INLINE_MAX`, `WHISPER_OUTPUT_MAX`, `WHISPER_HOP_MAX`, `WHISPER_HOP_HARD`, `WHISPER_SESSION_GRACE`, `WHISPER_ROUTE_TIMEOUT`, `WHISPER_MAX_CONTENT_BYTES`, `WHISPER_MAX_PAYLOAD_BYTES`, `WHISPER_SPOOL_MAX_PENDING`, `WHISPER_STALE_DAYS`); a non-numeric value clamps to the default and never disables a safety mechanism
 
 ## Known technical constraints
-- **Bug #10225**: hooks in plugins don't execute → define in `~/.claude/settings.json`
-- **hookSpecificOutput broken**: JSON format causes hook errors → use plain stdout
+- **Plugin hooks unreliable (#12151)**: plugin hooks execute, but their stdout/`additionalContext` is not reliably injected into context → define hooks in `~/.claude/settings.json` (user scope). (#10225 — plugin hooks not executing at all — was fixed upstream.)
+- **Hook output**: plain stdout is the documented injection path for `UserPromptSubmit`/`SessionStart` (capped at 10,000 chars — keep `WHISPER_OUTPUT_MAX` below that). JSON `hookSpecificOutput` works nowadays, but adds nothing here — keep plain stdout.
 - **Hook format in settings.json**: `{"matcher": "", "hooks": [{"type": "command", "command": "..."}]}`
 - **Hook latency**: keep `whisper check-inbox` fast (< 200 ms; empty inbox is ~ms)
 
