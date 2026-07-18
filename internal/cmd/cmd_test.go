@@ -5,10 +5,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/druide67/claude-whisper/internal/msg"
 	"github.com/druide67/claude-whisper/internal/store"
 )
 
@@ -283,9 +285,16 @@ func TestTargetedEscalationAfterTimeout(t *testing.T) {
 	if countInbox(p, "bob") != 0 {
 		t.Error("escalated message must be archived")
 	}
+	// The banner was rendered AND journaled by this very run: the unrouted
+	// condition is resolved, so the sentinel written at escalation must be
+	// cleared before the run ends (it only survives a crash mid-escalation).
 	warns, _ := filepath.Glob(filepath.Join(p.Warnings(), "unrouted-*.warn"))
-	if len(warns) == 0 {
-		t.Error("escalation must leave an unrouted sentinel")
+	if len(warns) != 0 {
+		t.Errorf("rendered escalation must clear its unrouted sentinel, found %v", warns)
+	}
+	b, err := os.ReadFile(filepath.Join(p.State(), "delivery.log"))
+	if err != nil || !strings.Contains(string(b), "(escalated)") {
+		t.Errorf("escalation must be journaled: %v %s", err, b)
 	}
 }
 
@@ -639,5 +648,394 @@ func TestOnlyUserPromptSubmitConsumes(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(p.State(), "delivery.log"))
 	if err != nil || !strings.Contains(string(b), `"sid":"sess1234"`) || !strings.Contains(string(b), "msg-") {
 		t.Errorf("delivery.log must record who consumed what: %v %s", err, b)
+	}
+}
+
+// --- priority flag ------------------------------------------------------------
+
+// captureStderr swaps os.Stderr for the duration of fn (stdout/stdin untouched).
+func captureStderr(t *testing.T, fn func() int) (string, int) {
+	t.Helper()
+	old := os.Stderr
+	defer func() { os.Stderr = old }()
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() { b, _ := io.ReadAll(r); done <- string(b) }()
+	code := fn()
+	w.Close()
+	out := <-done
+	return out, code
+}
+
+// inboxContains reports whether any pending message of peer contains want.
+func inboxContains(t *testing.T, p store.Paths, peer, want string) bool {
+	t.Helper()
+	entries, _ := os.ReadDir(p.Inbox(peer))
+	for _, e := range entries {
+		if !isMsg(e.Name()) {
+			continue
+		}
+		b, _ := os.ReadFile(filepath.Join(p.Inbox(peer), e.Name()))
+		if strings.Contains(string(b), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSendPriorityFlag(t *testing.T) {
+	p := sandbox(t)
+	initPeer(t, "alice")
+	initPeer(t, "bob")
+
+	// -p urgent is written into the message
+	if _, code := capture(t, "", func() int {
+		return Send([]string{"-f", "alice", "-p", "urgent", "bob", "fire"})
+	}); code != 0 {
+		t.Fatalf("send -p urgent exit %d", code)
+	}
+	if !inboxContains(t, p, "bob", `"priority":"urgent"`) {
+		t.Error("-p urgent must set priority:urgent in the message")
+	}
+
+	// -p normal is accepted (explicit default)
+	if _, code := capture(t, "", func() int {
+		return Send([]string{"-f", "alice", "-p", "normal", "bob", "calm"})
+	}); code != 0 {
+		t.Error("send -p normal must be accepted")
+	}
+
+	// anything else is a usage error, nothing written
+	before := countInbox(p, "bob")
+	if _, code := capture(t, "", func() int {
+		return Send([]string{"-f", "alice", "-p", "high", "bob", "nope"})
+	}); code != 1 {
+		t.Error("send -p high must exit 1 (usage error)")
+	}
+	if _, code := capture(t, "", func() int {
+		return Send([]string{"-f", "alice", "--priority", "bob", "nope"})
+	}); code != 1 {
+		t.Error("--priority swallowing the peer as its value must fail, not send")
+	}
+	if countInbox(p, "bob") != before {
+		t.Error("a refused -p value must not write a message")
+	}
+}
+
+func TestBroadcastPriorityFlag(t *testing.T) {
+	p := sandbox(t)
+	initPeer(t, "alice")
+	initPeer(t, "bob")
+	initPeer(t, "carol")
+	if _, code := capture(t, "", func() int {
+		return Broadcast([]string{"-f", "alice", "-p", "urgent", "all hands"})
+	}); code != 0 {
+		t.Fatal("broadcast -p urgent must succeed")
+	}
+	for _, peer := range []string{"bob", "carol"} {
+		if !inboxContains(t, p, peer, `"priority":"urgent"`) {
+			t.Errorf("broadcast -p urgent must reach %s as urgent", peer)
+		}
+	}
+	if _, code := capture(t, "", func() int {
+		return Broadcast([]string{"-f", "alice", "-p", "asap", "x"})
+	}); code != 1 {
+		t.Error("broadcast -p asap must exit 1")
+	}
+}
+
+func TestSpoolDepositUrgentPrioritySurvivesParse(t *testing.T) {
+	p := sandbox(t)
+	initPeer(t, "bob")
+	initPeer(t, "remote-agent")
+	_, code := spoolDep(t, "remote-agent",
+		`{"id":"msg-7-ee","from":"remote-agent","to":"bob","content":"now","priority":"urgent"}`)
+	if code != 0 {
+		t.Fatalf("urgent deposit must succeed, got %d", code)
+	}
+	b, err := os.ReadFile(filepath.Join(p.Inbox("bob"), "msg-7-ee.json"))
+	if err != nil {
+		t.Fatalf("deposited message unreadable: %v", err)
+	}
+	m, err := msg.Parse(b)
+	if err != nil {
+		t.Fatalf("deposited message must stay parseable: %v", err)
+	}
+	if m.Priority != "urgent" {
+		t.Errorf("priority must survive deposit+parse, got %q", m.Priority)
+	}
+}
+
+// --- pair circuit breaker -----------------------------------------------------
+
+// breakerEnv shrinks the thresholds and disables the dedup window so repeated
+// test sends hit the breaker, not the anti-duplicate ledger.
+func breakerEnv(t *testing.T, soft, hard int) {
+	t.Helper()
+	t.Setenv("WHISPER_DUP_WINDOW", "0")
+	t.Setenv("WHISPER_PAIR_SOFT", strconv.Itoa(soft))
+	t.Setenv("WHISPER_PAIR_HARD", strconv.Itoa(hard))
+	t.Setenv("WHISPER_PAIR_WINDOW", "600")
+}
+
+func pairSend(t *testing.T, from, to, content string) (string, int) {
+	t.Helper()
+	var stderr string
+	var code int
+	capture(t, "", func() int {
+		stderr, code = captureStderr(t, func() int {
+			return Send([]string{"-f", from, to, content})
+		})
+		return code
+	})
+	return stderr, code
+}
+
+func TestPairBreakerSoftWarnsHardRefuses(t *testing.T) {
+	p := sandbox(t)
+	initPeer(t, "alice")
+	initPeer(t, "bob")
+	initPeer(t, "carol")
+	breakerEnv(t, 2, 4)
+
+	// sends 1-2 (0 and 1 prior in window): silent. Directions alternate — the
+	// pair is UNORDERED, a ping-pong loop counts on one window.
+	if errOut, code := pairSend(t, "alice", "bob", "m1"); code != 0 || strings.Contains(errOut, "possible loop") {
+		t.Fatalf("send 1 must pass silently: code=%d err=%q", code, errOut)
+	}
+	if errOut, code := pairSend(t, "bob", "alice", "m2"); code != 0 || strings.Contains(errOut, "possible loop") {
+		t.Fatalf("send 2 must pass silently: code=%d err=%q", code, errOut)
+	}
+	// sends 3-4 (2 and 3 prior ≥ soft): delivered, loud warning
+	for i, dir := range []struct{ from, to string }{{"alice", "bob"}, {"bob", "alice"}} {
+		errOut, code := pairSend(t, dir.from, dir.to, "m"+strconv.Itoa(3+i))
+		if code != 0 {
+			t.Fatalf("soft-zone send %d must still be delivered, got exit %d", 3+i, code)
+		}
+		if !strings.Contains(errOut, "possible loop") || !strings.Contains(errOut, "LLM agent") {
+			t.Errorf("soft-zone send %d must warn an LLM sender loudly, got %q", 3+i, errOut)
+		}
+	}
+	// send 5 (4 prior ≥ hard): REFUSED + sentinel
+	errOut, code := pairSend(t, "alice", "bob", "m5")
+	if code != 1 {
+		t.Fatalf("hard-zone send must be refused (exit 1), got %d", code)
+	}
+	if !strings.Contains(errOut, "REFUSED") || !strings.Contains(errOut, "human") {
+		t.Errorf("refusal must tell the sender to report to a human, got %q", errOut)
+	}
+	if inboxContains(t, p, "bob", "m5") {
+		t.Error("refused send must not write a message")
+	}
+	sentinel := filepath.Join(p.Warnings(), "pair-flood-alice-bob.warn")
+	b, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("hard refusal must write pair-flood-alice-bob.warn: %v", err)
+	}
+	for _, want := range []string{`"pair":"alice|bob"`, `"count":4`, `"window":600`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("sentinel payload missing %s: %s", want, b)
+		}
+	}
+
+	// other pairs are unaffected
+	if _, code := pairSend(t, "alice", "carol", "hello carol"); code != 0 {
+		t.Error("an unrelated pair must not be blocked")
+	}
+	// broadcast counts per-recipient pair: alice→bob still blocked, alice→carol delivered
+	carolBefore, bobBefore := countInbox(p, "carol"), countInbox(p, "bob")
+	capture(t, "", func() int {
+		_, c := captureStderr(t, func() int { return Broadcast([]string{"-f", "alice", "bcast"}) })
+		return c
+	})
+	if countInbox(p, "bob") != bobBefore {
+		t.Error("broadcast must not bypass the breaker on the flooded pair")
+	}
+	if countInbox(p, "carol") != carolBefore+1 {
+		t.Error("broadcast must still reach unflooded pairs")
+	}
+}
+
+func TestPairBreakerWindowSlidesAndSentinelClears(t *testing.T) {
+	p := sandbox(t)
+	initPeer(t, "alice")
+	initPeer(t, "bob")
+	breakerEnv(t, 2, 3)
+
+	for i := 0; i < 3; i++ {
+		if _, code := pairSend(t, "alice", "bob", "w"+strconv.Itoa(i)); code != 0 {
+			t.Fatalf("send %d under hard limit must pass, got %d", i, code)
+		}
+	}
+	if _, code := pairSend(t, "alice", "bob", "w-over"); code != 1 {
+		t.Fatal("4th send must trip the hard limit")
+	}
+	sentinel := filepath.Join(p.Warnings(), "pair-flood-alice-bob.warn")
+	if !fileExists(sentinel) {
+		t.Fatal("tripped breaker must leave a pair-flood sentinel")
+	}
+
+	// Slide the window: age every ledger entry past WHISPER_PAIR_WINDOW.
+	raw, err := os.ReadFile(p.PairLedger())
+	if err != nil {
+		t.Fatalf("pair ledger must exist: %v", err)
+	}
+	var l struct {
+		Entries []struct {
+			TS   int64  `json:"ts"`
+			Pair string `json:"pair"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(raw, &l); err != nil {
+		t.Fatalf("pair ledger must be valid JSON: %v", err)
+	}
+	old := time.Now().Unix() - 700
+	for i := range l.Entries {
+		l.Entries[i].TS = old
+	}
+	b, _ := json.Marshal(l)
+	if err := os.WriteFile(p.PairLedger(), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Window drained: the send passes, the resolved sentinel is auto-cleared,
+	// and the stale entries were pruned on read.
+	errOut, code := pairSend(t, "alice", "bob", "after-drain")
+	if code != 0 || strings.Contains(errOut, "possible loop") {
+		t.Fatalf("post-drain send must pass silently: code=%d err=%q", code, errOut)
+	}
+	if fileExists(sentinel) {
+		t.Error("a send back under the soft threshold must clear the pair-flood sentinel")
+	}
+	raw, _ = os.ReadFile(p.PairLedger())
+	if strings.Count(string(raw), `"pair"`) != 1 {
+		t.Errorf("stale entries must be pruned as the ledger is read: %s", raw)
+	}
+}
+
+func TestPairBreakerCorruptLedgerFailsOpen(t *testing.T) {
+	p := sandbox(t)
+	initPeer(t, "alice")
+	initPeer(t, "bob")
+	breakerEnv(t, 2, 3)
+	if err := os.MkdirAll(p.State(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.PairLedger(), []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// a bookkeeping bug must never lose a legitimate send
+	if _, code := pairSend(t, "alice", "bob", "still-goes"); code != 0 {
+		t.Fatal("corrupt ledger must fail-open: the send goes through")
+	}
+	if !inboxContains(t, p, "bob", "still-goes") {
+		t.Error("message must be delivered despite the corrupt ledger")
+	}
+	raw, err := os.ReadFile(p.PairLedger())
+	if err != nil || !strings.Contains(string(raw), `"entries"`) {
+		t.Errorf("corrupt ledger must be rewritten fresh: %v %s", err, raw)
+	}
+	// the rebuilt ledger enforces again: flood it and expect a refusal
+	for i := 0; i < 3; i++ {
+		pairSend(t, "alice", "bob", "f"+strconv.Itoa(i))
+	}
+	if _, code := pairSend(t, "alice", "bob", "over"); code != 1 {
+		t.Error("the check must resume on the rebuilt ledger (fail-open is for reading only)")
+	}
+}
+
+// --- unrouted / unrouted-pending sentinel lifecycle ---------------------------
+
+func TestUnroutedPendingClearedOnClaim(t *testing.T) {
+	p := sandbox(t)
+	initPeer(t, "alice")
+	proj := initPeer(t, "bob")
+	t.Chdir(proj)
+	capture(t, "", func() int { return Send([]string{"-f", "alice", "-s", "SEO", "bob", "pending-then-claimed"}) })
+
+	// a consuming session that does NOT carry the title observes that nobody
+	// live does → unrouted-pending sentinel appears
+	capture(t, ev("sessDEV12", "DEV"), func() int { return CheckInbox(nil) })
+	warns, _ := filepath.Glob(filepath.Join(p.Warnings(), "unrouted-pending-*.warn"))
+	if len(warns) != 1 {
+		t.Fatalf("an unroutable title must raise unrouted-pending, found %d", len(warns))
+	}
+
+	// the matching session shows up and claims → sentinel cleared
+	out, _ := capture(t, ev("sessSEO12", "SEO"), func() int { return CheckInbox(nil) })
+	if !strings.Contains(out, "pending-then-claimed") {
+		t.Fatal("matching session must receive the message")
+	}
+	warns, _ = filepath.Glob(filepath.Join(p.Warnings(), "unrouted-pending-*.warn"))
+	if len(warns) != 0 {
+		t.Error("a claimed message must clear its unrouted-pending sentinel")
+	}
+}
+
+func TestUnroutedPendingClearedOnReidentification(t *testing.T) {
+	p := sandbox(t)
+	initPeer(t, "alice")
+	proj := initPeer(t, "bob")
+	t.Chdir(proj)
+	// session lives as "Old", then renames to "New" (rename observed now)
+	capture(t, ev("sessRENB1", "Old"), func() int { return CheckInbox(nil) })
+	capture(t, ev("sessRENB1", "New"), func() int { return CheckInbox(nil) })
+
+	// a message targeting "Old" whose mtime predates the rename observation
+	capture(t, "", func() int { return Send([]string{"-f", "alice", "-s", "Old", "bob", "pre-rename-pending"}) })
+	entries, _ := os.ReadDir(p.Inbox("bob"))
+	f := filepath.Join(p.Inbox("bob"), entries[0].Name())
+	past := time.Now().Add(-time.Hour)
+	_ = os.Chtimes(f, past, past)
+
+	// an unrelated session sees no live "Old" → pending sentinel raised
+	capture(t, ev("sessOTHER1", "X"), func() int { return CheckInbox(nil) })
+	warns, _ := filepath.Glob(filepath.Join(p.Warnings(), "unrouted-pending-*.warn"))
+	if len(warns) != 1 {
+		t.Fatalf("expected one unrouted-pending sentinel, found %d", len(warns))
+	}
+
+	// the renamed session re-identifies and claims → sentinel cleared
+	out, _ := capture(t, ev("sessRENB1", "New"), func() int { return CheckInbox(nil) })
+	if !strings.Contains(out, "pre-rename-pending") {
+		t.Fatal("re-identification must deliver the pre-rename message")
+	}
+	warns, _ = filepath.Glob(filepath.Join(p.Warnings(), "unrouted-pending-*.warn"))
+	if len(warns) != 0 {
+		t.Error("a re-identified claim must clear the unrouted-pending sentinel")
+	}
+}
+
+func TestUnroutedPendingClearedOnEscalation(t *testing.T) {
+	p := sandbox(t)
+	initPeer(t, "alice")
+	proj := initPeer(t, "bob")
+	t.Chdir(proj)
+	capture(t, "", func() int { return Send([]string{"-f", "alice", "-s", "Ghost", "bob", "will-escalate"}) })
+
+	// pending state first (nobody carries "Ghost")
+	capture(t, ev("sessWAIT1", "Other"), func() int { return CheckInbox(nil) })
+	warns, _ := filepath.Glob(filepath.Join(p.Warnings(), "unrouted-pending-*.warn"))
+	if len(warns) != 1 {
+		t.Fatalf("expected one unrouted-pending sentinel, found %d", len(warns))
+	}
+
+	// then the timeout passes and the message escalates
+	t.Setenv("WHISPER_ROUTE_TIMEOUT", "0")
+	entries, _ := os.ReadDir(p.Inbox("bob"))
+	old := time.Now().Add(-time.Minute)
+	_ = os.Chtimes(filepath.Join(p.Inbox("bob"), entries[0].Name()), old, old)
+	out, _ := capture(t, ev("sessWAIT1", "Other"), func() int { return CheckInbox(nil) })
+	if !strings.Contains(out, "undelivered") {
+		t.Fatal("escalation banner expected")
+	}
+	warns, _ = filepath.Glob(filepath.Join(p.Warnings(), "unrouted-pending-*.warn"))
+	if len(warns) != 0 {
+		t.Error("escalation must clear the unrouted-pending sentinel")
+	}
+	warns, _ = filepath.Glob(filepath.Join(p.Warnings(), "unrouted-*.warn"))
+	if len(warns) != 0 {
+		t.Error("a rendered+journaled escalation must clear its unrouted sentinel too")
 	}
 }

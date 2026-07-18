@@ -37,6 +37,7 @@ func (p Paths) Warnings() string         { return filepath.Join(p.Root, "state",
 func (p Paths) PeersFile() string        { return filepath.Join(p.Root, "peers.json") }
 func (p Paths) ConfigFile() string       { return filepath.Join(p.Root, "state", "config.json") }
 func (p Paths) RecentSends() string      { return filepath.Join(p.Root, "state", "recent-sends.json") }
+func (p Paths) PairLedger() string       { return filepath.Join(p.Root, "state", "pair-ledger.json") }
 func (p Paths) MultiState(peer string) string {
 	return filepath.Join(p.Root, "state", "multi", peer+".json")
 }

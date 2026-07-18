@@ -59,8 +59,8 @@ func usage() {
 Usage: whisper <command> [args]
 
 Commands:
-  send [-t thread] [-f from] [-r reply-to] [-s session|'*'] [-F] <peer> <message>
-  broadcast [-t thread] [-f from] <message>
+  send [-t thread] [-f from] [-r reply-to] [-s session|'*'] [-p normal|urgent] [-F] <peer> <message>
+  broadcast [-t thread] [-f from] [-p normal|urgent] <message>
   list [--sessions]
   clean [days]
   init <peer-id> [project-dir] | <peer-id> --transport <type> [--ssh-alias X] [--key-path Y]

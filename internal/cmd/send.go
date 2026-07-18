@@ -20,13 +20,13 @@ import (
 )
 
 type sendOpts struct {
-	thread, from, replyTo, session string
-	force                          bool
+	thread, from, replyTo, session, priority string
+	force                                    bool
 }
 
 // Send implements:
 //
-//	whisper send [-t thread] [-f from] [-r reply-to] [-s session-title|'*'] [-F] <peer> <message>
+//	whisper send [-t thread] [-f from] [-r reply-to] [-s session-title|'*'] [-p normal|urgent] [-F] <peer> <message>
 func Send(args []string) int {
 	var o sendOpts
 	rest, err := parseSendFlags(args, &o)
@@ -34,7 +34,7 @@ func Send(args []string) int {
 		return errf(1, "%v", err)
 	}
 	if len(rest) < 2 {
-		return errf(1, "Usage: whisper send [-t thread] [-f from] [-r reply-to] [-s session|'*'] [-F] <peer> <message>")
+		return errf(1, "Usage: whisper send [-t thread] [-f from] [-r reply-to] [-s session|'*'] [-p normal|urgent] [-F] <peer> <message>")
 	}
 	to := rest[0]
 	content := strings.Join(rest[1:], " ")
@@ -107,15 +107,26 @@ func sendMessage(p store.Paths, to, from, content string, o sendOpts) int {
 		return 0 // duplicate within window: refused, not an error
 	}
 
+	// Anti-loop circuit breaker: rate-limit the unordered {from,to} pair. A
+	// ping-pong loop between two agents shows up here even when no explicit
+	// reply chain (hop_count) links the messages.
+	if !pairBreakerOK(p, from, to, now) {
+		return 1
+	}
+
 	hop := resolveHop(p, o.replyTo, to, from)
 
+	prio := o.priority
+	if prio == "" {
+		prio = "normal"
+	}
 	rnd := make([]byte, 4)
 	_, _ = rand.Read(rnd)
 	id := msg.NewID(now.Unix(), rnd)
 	m := &msg.Message{
 		ID: id, From: from, To: to,
 		Timestamp: msg.FormatTimestamp(now), Content: content,
-		Priority: "normal", TTL: 3600, HopCount: hop,
+		Priority: prio, TTL: 3600, HopCount: hop,
 		Thread: o.thread, InReplyTo: o.replyTo, Session: o.session,
 	}
 	b, err := msg.Marshal(m)
@@ -161,6 +172,15 @@ func parseSendFlags(args []string, o *sendOpts) ([]string, error) {
 				return nil, fmt.Errorf("--session needs a value (a session title, or '*')")
 			}
 			o.session = args[i+1]
+			i += 2
+		case "-p", "--priority":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf(`--priority needs a value ("normal" or "urgent")`)
+			}
+			if v := args[i+1]; v != "normal" && v != "urgent" {
+				return nil, fmt.Errorf(`--priority must be "normal" or "urgent" (got: %s)`, v)
+			}
+			o.priority = args[i+1]
 			i += 2
 		case "-F", "--force":
 			o.force = true

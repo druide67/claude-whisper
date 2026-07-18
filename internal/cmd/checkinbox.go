@@ -190,6 +190,7 @@ func CheckInbox(args []string) int {
 
 	var context strings.Builder
 	var consumed []string
+	var escalated []string // sentinel keys to clear once the banner is out
 	count, pending := 0, 0
 
 	for i, it := range items {
@@ -219,6 +220,7 @@ func CheckInbox(args []string) int {
 				continue // someone else escalated first
 			}
 			consumed = append(consumed, it.m.ID+"(escalated)")
+			escalated = append(escalated, strings.TrimSuffix(filepath.Base(it.f), ".json"))
 		case actStar:
 			if rc.consume && rc.sid != "" {
 				rc.ms.MarkSeen(it.m.ID, rc.sid)
@@ -246,6 +248,13 @@ func CheckInbox(args []string) int {
 		return 0
 	}
 	fmt.Print(renderOutput(context.String(), count, pending))
+	// The escalation banners are now rendered AND journaled — the loud delivery
+	// happened, so the unrouted condition is resolved. The sentinel written in
+	// escalateClaim only outlives a crash between the claim and this point
+	// (leaving it forever was the 14-17/07 bug: resolved sentinels nagging).
+	for _, key := range escalated {
+		warn.Clear(p, "unrouted", key)
+	}
 	return 0
 }
 
@@ -299,10 +308,13 @@ func route(rc *runCtx, f string, m *msg.Message) action {
 	}
 	// Re-identification: I carried this title until recently, the message
 	// arrived BEFORE my rename (local mtime vs local renamed_at — no remote
-	// clocks involved), and nobody live carries it now.
+	// clocks involved), and nobody live carries it now. A matching session
+	// exists after all — the unrouted-pending condition is resolved (leaving
+	// it was a nag: sentinel outliving a delivered message).
 	if rc.consume && rc.sid != "" {
 		if e := rc.ms.Sessions[rc.sid]; e != nil && e.PrevTitle == target &&
 			mtimeOf(f) < e.RenamedAt && !rc.ms.AnyLiveTitled(target, rc.now, rc.grace) {
+			warn.Clear(rc.p, "unrouted-pending", strings.TrimSuffix(filepath.Base(f), ".json"))
 			return actClaim
 		}
 	}

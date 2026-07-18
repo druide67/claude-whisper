@@ -26,8 +26,8 @@ go build -o ~/.local/bin/whisper ./cmd/whisper   # install locally
 
 # CLI usage (one binary, git-style subcommands)
 whisper init <peer-id> [project-dir]
-whisper send [-t thread] [-f from] [-r reply-to] [-s session|'*'] [-F] <peer> "message"
-whisper broadcast [-t thread] [-f from] "message"
+whisper send [-t thread] [-f from] [-r reply-to] [-s session|'*'] [-p normal|urgent] [-F] <peer> "message"
+whisper broadcast [-t thread] [-f from] [-p normal|urgent] "message"
 whisper list [--sessions]
 whisper clean [days]
 whisper doctor [--fix] [--yes] [--list-orphans]
@@ -107,6 +107,7 @@ The on-disk layout is a public interface — external tools (menu-bar apps, edit
 - `inbox/<peer>/msg-*.json`, `archive/`
 - `state/config.json` — `{autoGlobal, modePerPeer}` (delivery modes for UI integrations)
 - `state/recent-sends.json` — anti-duplicate ledger
+- `state/pair-ledger.json` — sliding-window ledger of the anti-loop pair circuit breaker
 - `state/warnings/*.warn` — fail-loud sentinels
 - `.whisper-peer` — peer-id file in each project root (gitignored)
 
@@ -121,7 +122,7 @@ Plain text on stdout (exit code 0). This is the documented injection path for `U
 - Validation only via `internal/peerid` (peer-id: `^[a-zA-Z0-9][a-zA-Z0-9-]*$`)
 - Sentinels only via `internal/warn`; a resolved condition must clear its sentinel
 - Hook stays fast: no network calls, no subprocess spawning in `check-inbox`
-- Tunables are env vars with safe defaults (`WHISPER_DIR`, `WHISPER_DUP_WINDOW`, `WHISPER_INLINE_MAX`, `WHISPER_OUTPUT_MAX`, `WHISPER_HOP_MAX`, `WHISPER_HOP_HARD`, `WHISPER_SESSION_GRACE`, `WHISPER_ROUTE_TIMEOUT`, `WHISPER_MAX_CONTENT_BYTES`, `WHISPER_MAX_PAYLOAD_BYTES`, `WHISPER_SPOOL_MAX_PENDING`, `WHISPER_STALE_DAYS`); a non-numeric value clamps to the default and never disables a safety mechanism
+- Tunables are env vars with safe defaults (`WHISPER_DIR`, `WHISPER_DUP_WINDOW`, `WHISPER_INLINE_MAX`, `WHISPER_OUTPUT_MAX`, `WHISPER_HOP_MAX`, `WHISPER_HOP_HARD`, `WHISPER_SESSION_GRACE`, `WHISPER_ROUTE_TIMEOUT`, `WHISPER_PAIR_SOFT`, `WHISPER_PAIR_HARD`, `WHISPER_PAIR_WINDOW`, `WHISPER_MAX_CONTENT_BYTES`, `WHISPER_MAX_PAYLOAD_BYTES`, `WHISPER_SPOOL_MAX_PENDING`, `WHISPER_STALE_DAYS`); a non-numeric value clamps to the default and never disables a safety mechanism
 
 ## Known technical constraints
 - **Plugin hooks unreliable (#12151)**: plugin hooks execute, but their stdout/`additionalContext` is not reliably injected into context → define hooks in `~/.claude/settings.json` (user scope). (#10225 — plugin hooks not executing at all — was fixed upstream.)
