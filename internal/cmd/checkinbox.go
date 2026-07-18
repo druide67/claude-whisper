@@ -505,8 +505,11 @@ func renderBody(p store.Paths, m *msg.Message, base string, inlineMax, hopMax in
 	if m.HopCount > hopMax {
 		hopWarn = fmt.Sprintf(" ⚠ HOP=%d/%d (suspected loop)", m.HopCount, hopMax)
 	}
+	// The msg-id is part of the rendered format: without it a receiver cannot
+	// reply with -r (in_reply_to) — the reply chain that hop-count loop
+	// detection depends on — short of digging through archive/ by hand.
 	if len(m.Content) < inlineMax {
-		return fmt.Sprintf("\n> **%s** (%s)%s%s: %s", m.From, shortTS, tag, hopWarn, m.Content)
+		return fmt.Sprintf("\n> **%s** (%s)%s%s [%s]: %s", m.From, shortTS, tag, hopWarn, m.ID, m.Content)
 	}
 	archivePath := filepath.Join(p.Archive(), base)
 	// A '*' original stays in the inbox for the other sessions, so publish a
