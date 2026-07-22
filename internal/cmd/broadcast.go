@@ -42,6 +42,12 @@ func Broadcast(args []string) int {
 		if id == from {
 			continue
 		}
+		// A retired peer (its instance will never run again) stays in the
+		// registry for the record but is skipped by broadcasts — otherwise
+		// every broadcast keeps piling unread messages in a dead inbox.
+		if r, ok := pf.Peers[id]["retired"].(bool); ok && r {
+			continue
+		}
 		// broadcast targets are registered by definition, so --force semantics
 		// are irrelevant; reuse the single send path for consistency.
 		if sendMessage(p, id, from, content, sendOpts{thread: o.thread, from: from, priority: o.priority, force: true}) == 0 {
